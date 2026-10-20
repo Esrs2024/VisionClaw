@@ -12,7 +12,6 @@
 // - Device registration and unregistration using the DAT SDK
 // - Permission management for wearable devices
 // - Device discovery and state management
-// - Integration with MockDeviceKit for testing
 
 package com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables
 
@@ -27,7 +26,6 @@ import com.meta.wearable.dat.core.types.DeviceIdentifier
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
 import com.meta.wearable.dat.core.types.RegistrationState
-import com.meta.wearable.dat.mockdevice.MockDeviceKit
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,7 +43,7 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
   val uiState: StateFlow<WearablesUiState> = _uiState.asStateFlow()
 
   // AutoDeviceSelector automatically selects the first available wearable device
-  val deviceSelector: DeviceSelector = AutoDeviceSelector()
+  val deviceSelector: DeviceSelector by lazy { AutoDeviceSelector() }
   private var deviceSelectorJob: Job? = null
 
   private var monitoringStarted = false
@@ -56,21 +54,28 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
       return
     }
     monitoringStarted = true
+    _uiState.update { it.copy(isSdkReady = true) }
 
     // Monitor device selector for active device
     deviceSelectorJob =
         viewModelScope.launch {
-          deviceSelector.activeDevice(Wearables.devices).collect { device ->
+          deviceSelector.activeDeviceFlow().collect { device ->
             _uiState.update { it.copy(hasActiveDevice = device != null) }
           }
         }
+
+    viewModelScope.launch {
+      Wearables.registrationErrorStream.collect { error ->
+        setRecentError("Meta AI: " + error.description)
+      }
+    }
 
     // This allows the app to react to registration changes (registered, unregistered, etc.)
     viewModelScope.launch {
       Wearables.registrationState.collect { value ->
         val previousState = _uiState.value.registrationState
         val showGettingStartedSheet =
-            value is RegistrationState.Registered && previousState is RegistrationState.Registering
+            value == RegistrationState.REGISTERED && previousState == RegistrationState.REGISTERING
         _uiState.update {
           it.copy(registrationState = value, isGettingStartedSheetVisible = showGettingStartedSheet)
         }
@@ -79,9 +84,8 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
     // This automatically updates when devices are discovered, connected, or disconnected
     viewModelScope.launch {
       Wearables.devices.collect { value ->
-        val hasMockDevices = MockDeviceKit.getInstance(getApplication()).pairedDevices.isNotEmpty()
         _uiState.update {
-          it.copy(devices = value.toList().toImmutableList(), hasMockDevices = hasMockDevices)
+          it.copy(devices = value.toList().toImmutableList())
         }
         // Monitor device metadata for compatibility issues
         monitorDeviceCompatibility(value)
@@ -117,7 +121,13 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
   }
 
   fun startRegistration(activity: Activity) {
-    Wearables.startRegistration(activity)
+    if (!_uiState.value.isSdkReady) {
+      setRecentError("Falta el permiso de dispositivos cercanos. Actívalo en los permisos de VisionClaw.")
+      return
+    }
+    runCatching { Wearables.startRegistration(activity) }.onFailure {
+      setRecentError("No se pudo abrir la autorización de Meta AI. Comprueba que está instalada y actualizada.")
+    }
   }
 
   fun startUnregistration(activity: Activity) {
@@ -125,6 +135,10 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
   }
 
   fun navigateToStreaming(onRequestWearablesPermission: suspend (Permission) -> PermissionStatus) {
+    if (!_uiState.value.isRegistered || !_uiState.value.hasActiveDevice) {
+      setRecentError("No hay gafas reales conectadas a VisionClaw. Autoriza la conexión en Meta AI.")
+      return
+    }
     viewModelScope.launch {
       val permission = Permission.CAMERA // Camera permission is required for streaming
       val result = Wearables.checkPermissionStatus(permission)
@@ -168,14 +182,6 @@ class WearablesViewModel(application: Application) : AndroidViewModel(applicatio
 
   fun hideSettings() {
     _uiState.update { it.copy(isSettingsVisible = false) }
-  }
-
-  fun showDebugMenu() {
-    _uiState.update { it.copy(isDebugMenuVisible = true) }
-  }
-
-  fun hideDebugMenu() {
-    _uiState.update { it.copy(isDebugMenuVisible = false) }
   }
 
   fun clearCameraPermissionError() {

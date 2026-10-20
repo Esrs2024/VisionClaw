@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +53,7 @@ fun HomeScreen(
     viewModel: WearablesViewModel,
     modifier: Modifier = Modifier,
 ) {
+  val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val scrollState = rememberScrollState()
   val activity = LocalActivity.current
   val context = LocalContext.current
@@ -117,13 +120,14 @@ fun HomeScreen(
       ) {
         // App Registration Button
         Text(
-            text = stringResource(R.string.home_redirect_message),
+            text = "Meta AI debe autorizar el acceso a tus gafas. Para esta instalación personal, Meta exige activar su modo desarrollador.\nDispositivos detectados: ${uiState.devices.size}",
             color = Color.Gray,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp),
         )
         SwitchButton(
-            label = stringResource(R.string.register_button_title),
+            label = if (uiState.registrationState == com.meta.wearable.dat.core.types.RegistrationState.REGISTERING) "Esperando autorización de Meta AI…" else "Conectar mis Ray-Ban Meta",
+            enabled = uiState.isSdkReady && uiState.registrationState != com.meta.wearable.dat.core.types.RegistrationState.REGISTERING,
             onClick = {
               activity?.let { viewModel.startRegistration(it) }
                   ?: Toast.makeText(context, "Activity not available", Toast.LENGTH_SHORT).show()
@@ -132,7 +136,7 @@ fun HomeScreen(
 
         // Phone mode button
         SwitchButton(
-            label = "Start on Phone",
+            label = "Usar cámara del móvil",
             onClick = { viewModel.navigateToPhoneMode() },
         )
       }

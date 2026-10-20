@@ -74,7 +74,7 @@ fun NonStreamScreen(
   val gettingStartedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   val scope = rememberCoroutineScope()
   var dropdownExpanded by remember { mutableStateOf(false) }
-  val isDisconnectEnabled = uiState.registrationState is RegistrationState.Registered
+  val isDisconnectEnabled = uiState.registrationState == RegistrationState.REGISTERED
   val activity = LocalActivity.current
   val context = LocalContext.current
 
@@ -189,7 +189,7 @@ fun NonStreamScreen(
 
         // Start on Phone Button
         SwitchButton(
-            label = "Start on Phone",
+            label = "Usar cámara del móvil",
             onClick = { viewModel.navigateToPhoneMode() },
         )
       }

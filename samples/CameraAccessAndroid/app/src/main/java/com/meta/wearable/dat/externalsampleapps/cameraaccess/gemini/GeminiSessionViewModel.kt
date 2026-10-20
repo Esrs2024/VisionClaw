@@ -2,7 +2,8 @@ package com.meta.wearable.dat.externalsampleapps.cameraaccess.gemini
 
 import android.graphics.Bitmap
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw.OpenClawBridge
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw.OpenClawEventClient
@@ -30,7 +31,7 @@ data class GeminiUiState(
     val openClawConnectionState: OpenClawConnectionState = OpenClawConnectionState.NotConfigured,
 )
 
-class GeminiSessionViewModel : ViewModel() {
+class GeminiSessionViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "GeminiSessionVM"
     }
@@ -59,6 +60,13 @@ class GeminiSessionViewModel : ViewModel() {
         }
 
         _uiState.value = _uiState.value.copy(isGeminiActive = true)
+
+        audioManager.onCaptureError = { message ->
+            viewModelScope.launch {
+                stopSession()
+                _uiState.value = _uiState.value.copy(errorMessage = message)
+            }
+        }
 
         // Wire audio callbacks
         audioManager.onAudioCaptured = lambda@{ data ->
@@ -142,6 +150,7 @@ class GeminiSessionViewModel : ViewModel() {
                         else -> "Failed to connect to Gemini"
                     }
                     _uiState.value = _uiState.value.copy(errorMessage = msg)
+                    audioManager.stopCapture()
                     geminiService.disconnect()
                     stateObservationJob?.cancel()
                     _uiState.value = _uiState.value.copy(
@@ -153,10 +162,10 @@ class GeminiSessionViewModel : ViewModel() {
 
                 // Start mic capture
                 try {
-                    audioManager.startCapture()
+                    audioManager.startCapture(getApplication(), streamingMode == StreamingMode.GLASSES)
                 } catch (e: Exception) {
                     _uiState.value = _uiState.value.copy(
-                        errorMessage = "Mic capture failed: ${e.message}"
+                        errorMessage = "Micrófono: ${e.message}"
                     )
                     geminiService.disconnect()
                     stateObservationJob?.cancel()

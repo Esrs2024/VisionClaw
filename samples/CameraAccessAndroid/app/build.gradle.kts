@@ -14,7 +14,7 @@ plugins {
 
 android {
   namespace = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
-  compileSdk = 35
+  compileSdk = 36
 
   buildFeatures { buildConfig = true }
 
@@ -22,8 +22,8 @@ android {
     applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
     minSdk = 31
     targetSdk = 34
-    versionCode = 2
-    versionName = "1.1-gemini-direct"
+    versionCode = 3
+    versionName = "1.2-real-glasses"
     ndk { abiFilters += listOf("arm64-v8a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -66,7 +66,6 @@ dependencies {
   implementation(libs.kotlinx.collections.immutable)
   implementation(libs.mwdat.core)
   implementation(libs.mwdat.camera)
-  implementation(libs.mwdat.mockdevice)
   // VisionClaw additions
   implementation(libs.okhttp)
   implementation(libs.webrtc)

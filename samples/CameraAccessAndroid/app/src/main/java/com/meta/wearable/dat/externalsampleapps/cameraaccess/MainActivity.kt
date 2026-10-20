@@ -8,10 +8,8 @@
 
 package com.meta.wearable.dat.externalsampleapps.cameraaccess
 
-import android.Manifest.permission.BLUETOOTH
 import android.Manifest.permission.BLUETOOTH_CONNECT
 import android.Manifest.permission.CAMERA
-import android.Manifest.permission.INTERNET
 import android.Manifest.permission.RECORD_AUDIO
 import android.os.Bundle
 import android.view.WindowManager
@@ -74,9 +72,8 @@ class MainActivity : ComponentActivity() {
     checkPermissions {
       // Initialize the DAT SDK once the permissions are granted
       Wearables.initialize(this)
-
-      // Start observing Wearables state after SDK is initialized
-      viewModel.startMonitoring()
+          .onSuccess { viewModel.startMonitoring() }
+          .onFailure { error, _ -> viewModel.setRecentError("Meta SDK: " + error.description) }
     }
 
     setContent {
@@ -89,12 +86,12 @@ class MainActivity : ComponentActivity() {
 
   fun checkPermissions(onPermissionsGranted: () -> Unit) {
     registerForActivityResult(RequestMultiplePermissions()) { permissionsResult ->
-          val granted = permissionsResult.entries.all { it.value }
+          val granted = androidx.core.content.ContextCompat.checkSelfPermission(this, BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
           if (granted) {
             onPermissionsGranted()
           } else {
             viewModel.setRecentError(
-                "Allow All Permissions (Bluetooth, Bluetooth Connect, Internet, Microphone, Camera)"
+                "Permite Dispositivos cercanos en los permisos de VisionClaw para conectar las gafas."
             )
           }
         }

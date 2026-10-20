@@ -24,11 +24,17 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.meta.wearable.dat.camera.StreamSession
-import com.meta.wearable.dat.camera.startStreamSession
+import com.meta.wearable.dat.camera.Camera
+import com.meta.wearable.dat.camera.Stream
+import com.meta.wearable.dat.camera.addCamera
+import com.meta.wearable.dat.core.session.DeviceSession
+import com.meta.wearable.dat.core.session.DeviceSessionState
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
 import com.meta.wearable.dat.camera.types.PhotoData
 import com.meta.wearable.dat.camera.types.StreamConfiguration
-import com.meta.wearable.dat.camera.types.StreamSessionState
+import com.meta.wearable.dat.camera.types.StreamState
 import com.meta.wearable.dat.camera.types.VideoFrame
 import com.meta.wearable.dat.camera.types.VideoQuality
 import com.meta.wearable.dat.core.Wearables
@@ -60,7 +66,12 @@ class StreamViewModel(
   }
 
   private val deviceSelector: DeviceSelector = wearablesViewModel.deviceSelector
-  private var streamSession: StreamSession? = null
+  private var streamSession: Stream? = null
+  private var deviceSession: DeviceSession? = null
+  private var camera: Camera? = null
+  private var sessionJob: Job? = null
+  private var sessionErrors: Job? = null
+  private var streamErrors: Job? = null
 
   private val _uiState = MutableStateFlow(INITIAL_STATE)
   val uiState: StateFlow<StreamUiState> = _uiState.asStateFlow()
@@ -74,34 +85,70 @@ class StreamViewModel(
   private var phoneCameraManager: PhoneCameraManager? = null
 
   fun startStream() {
-    videoJob?.cancel()
-    stateJob?.cancel()
-
-    // Start foreground service to keep streaming alive in background / screen locked
-    StreamingService.start(getApplication())
-
-    val streamSession =
-        Wearables.startStreamSession(
-                getApplication(),
-                deviceSelector,
-                StreamConfiguration(videoQuality = VideoQuality.MEDIUM, 15),
-            )
-            .also { streamSession = it }
-    _uiState.update { it.copy(streamingMode = StreamingMode.GLASSES) }
-    videoJob = viewModelScope.launch { streamSession.videoStream.collect { handleVideoFrame(it) } }
-    stateJob =
-        viewModelScope.launch {
-          streamSession.state.collect { currentState ->
-            val prevState = _uiState.value.streamSessionState
-            _uiState.update { it.copy(streamSessionState = currentState) }
-
-            // navigate back when state transitioned to STOPPED
-            if (currentState != prevState && currentState == StreamSessionState.STOPPED) {
+    stopStream()
+    _uiState.update { it.copy(streamingMode = StreamingMode.GLASSES, streamSessionState = StreamState.STARTING) }
+    sessionJob = viewModelScope.launch {
+      try {
+        val created = Wearables.createSession(deviceSelector)
+            .onFailure { error, _ -> wearablesViewModel.setRecentError("No se pudo abrir la sesión: " + error.description) }
+            .getOrNull() ?: run { stopStream(); return@launch }
+        deviceSession = created
+        sessionErrors = viewModelScope.launch {
+          created.errors.collect { error ->
+            wearablesViewModel.setRecentError("Gafas: " + error.description)
+            stopStream()
+            wearablesViewModel.navigateToDeviceSelection()
+          }
+        }
+        created.start()
+        val state = withTimeout(20000) {
+          created.state.first { it == DeviceSessionState.STARTED || it == DeviceSessionState.STOPPED }
+        }
+        check(state == DeviceSessionState.STARTED) { "Las gafas cerraron la sesión antes de iniciarla." }
+        val addedCamera = created.addCamera(
+            StreamConfiguration(videoQuality = VideoQuality.MEDIUM, frameRate = 15, compressVideo = false)
+        ).onFailure { error, _ ->
+          wearablesViewModel.setRecentError("Cámara de las gafas: " + error.description)
+        }.getOrNull() ?: run { stopStream(); return@launch }
+        camera = addedCamera
+        val active = addedCamera.stream
+        streamSession = active
+        StreamingService.start(getApplication())
+        videoJob = viewModelScope.launch {
+          active.videoStream.collect { frame -> handleVideoFrame(frame) }
+        }
+        streamErrors = viewModelScope.launch {
+          active.errorStream.collect { error ->
+            wearablesViewModel.setRecentError("Vídeo de las gafas: " + error.description)
+            stopStream()
+            wearablesViewModel.navigateToDeviceSelection()
+          }
+        }
+        stateJob = viewModelScope.launch {
+          var wasActive = false
+          active.state.collect { current ->
+            _uiState.update { it.copy(streamSessionState = current) }
+            val terminal = current == StreamState.STOPPED || current == StreamState.CLOSED
+            if (!terminal) wasActive = true
+            if (wasActive && terminal) {
               stopStream()
               wearablesViewModel.navigateToDeviceSelection()
             }
           }
         }
+        active.start().onFailure { error, _ ->
+          wearablesViewModel.setRecentError("No se pudo iniciar la cámara real: " + error.description)
+          stopStream()
+          wearablesViewModel.navigateToDeviceSelection()
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (_: Exception) {
+        wearablesViewModel.setRecentError("No se pudo iniciar la sesión real de las gafas. Revisa la autorización y las actualizaciones en Meta AI.")
+        stopStream()
+        wearablesViewModel.navigateToDeviceSelection()
+      }
+    }
   }
 
   fun startPhoneCamera(lifecycleOwner: LifecycleOwner) {
@@ -119,7 +166,7 @@ class StreamViewModel(
     _uiState.update {
       it.copy(
         streamingMode = StreamingMode.PHONE,
-        streamSessionState = StreamSessionState.STREAMING,
+        streamSessionState = StreamState.STREAMING,
       )
     }
     manager.start(lifecycleOwner)
@@ -134,8 +181,17 @@ class StreamViewModel(
     videoJob = null
     stateJob?.cancel()
     stateJob = null
-    streamSession?.close()
+    streamErrors?.cancel()
+    streamErrors = null
+    sessionErrors?.cancel()
+    sessionErrors = null
+    sessionJob?.cancel()
+    sessionJob = null
+    camera?.close()
+    camera = null
     streamSession = null
+    deviceSession?.stop()
+    deviceSession = null
     phoneCameraManager?.stop()
     phoneCameraManager = null
     _uiState.update { INITIAL_STATE }
@@ -147,7 +203,7 @@ class StreamViewModel(
       return
     }
 
-    if (uiState.value.streamSessionState == StreamSessionState.STREAMING) {
+    if (uiState.value.streamSessionState == StreamState.STREAMING) {
       // Phone mode: capture current video frame as photo
       if (uiState.value.streamingMode == StreamingMode.PHONE) {
         uiState.value.videoFrame?.let { frame ->
@@ -214,6 +270,10 @@ class StreamViewModel(
   }
 
   private fun handleVideoFrame(videoFrame: VideoFrame) {
+    if (videoFrame.isCompressed) {
+      wearablesViewModel.setRecentError("La cámara devolvió vídeo comprimido cuando se solicitó vídeo sin comprimir.")
+      return
+    }
     // VideoFrame contains raw I420 video data in a ByteBuffer
     val buffer = videoFrame.buffer
     val dataSize = buffer.remaining()

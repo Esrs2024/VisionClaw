@@ -1,4 +1,4 @@
-name: Compilar VisionClaw Gemini Direct
+name: Compilar VisionClaw para gafas reales
 
 on:
   workflow_dispatch:
@@ -40,7 +40,7 @@ jobs:
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
           log-accepted-android-sdk-licenses: false
 
       - name: Comprobar que existe el secreto de paquetes
@@ -56,6 +56,21 @@ jobs:
         run: |
           cp app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt.example app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt
 
+      - name: Verificar que no hay simulador
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("app/src/main")
+          forbidden = ("MockDeviceKit", "mwdat.mockdevice", "hasMockDevices")
+          for path in root.rglob("*"):
+              if path.suffix in (".kt", ".kts"):
+                  content = path.read_text()
+                  assert not any(word in content for word in forbidden), str(path)
+          assert "mwdat.mockdevice" not in Path("app/build.gradle.kts").read_text()
+          assert 'mwdat = "1.0.1"' in Path("gradle/libs.versions.toml").read_text()
+          print("SDK actual y sin código ni dependencia de simulación.")
+          PY
+
       - name: Compilar APK ARM64 para Xiaomi 14
         env:
           GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
@@ -64,14 +79,14 @@ jobs:
       - name: Preparar descarga y suma de comprobacion
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Gemini-Direct-Xiaomi14-arm64.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Gafas-Reales-Xiaomi14-arm64.apk
           cd dist
-          sha256sum VisionClaw-Gemini-Direct-Xiaomi14-arm64.apk > SHA256SUMS.txt
+          sha256sum VisionClaw-Gafas-Reales-Xiaomi14-arm64.apk > SHA256SUMS.txt
 
       - name: Guardar APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Gemini-Direct-Xiaomi14-arm64
+          name: VisionClaw-Gafas-Reales-Xiaomi14-arm64
           path: samples/CameraAccessAndroid/dist/
           if-no-files-found: error
           retention-days: 14
