@@ -76,17 +76,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
         run: bash ./gradlew :app:assembleDebug --no-daemon --console=plain
 
+      - name: Verificar firma, version y compatibilidad del APK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee apk-signature.txt
+          grep -Fq '567c39b4c6ea3e52a0d642f8fe9a3b082d3952306df364fc26a2d9624e55f76e' apk-signature.txt
+          "$TOOLS/aapt" dump badging "$APK" > apk-package.txt
+          grep -F "package: name='com.meta.wearable.dat.externalsampleapps.cameraaccess' versionCode='4'" apk-package.txt
+          grep -F "sdkVersion:'31'" apk-package.txt
+          grep -F "native-code: 'arm64-v8a'" apk-package.txt
+          unzip -t "$APK" > /dev/null
+
       - name: Preparar descarga y suma de comprobacion
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Gafas-Reales-Xiaomi14-arm64.apk
-          cd dist
-          sha256sum VisionClaw-Gafas-Reales-Xiaomi14-arm64.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-v4-Gafas-Reales-Xiaomi14-arm64.apk
+          cp apk-signature.txt apk-package.txt dist/\n          cd dist
+          sha256sum VisionClaw-v4-Gafas-Reales-Xiaomi14-arm64.apk > SHA256SUMS.txt
 
       - name: Guardar APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Gafas-Reales-Xiaomi14-arm64
+          name: VisionClaw-v4-Gafas-Reales-Xiaomi14-arm64
           path: samples/CameraAccessAndroid/dist/
           if-no-files-found: error
           retention-days: 14

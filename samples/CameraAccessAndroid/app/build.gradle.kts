@@ -22,8 +22,8 @@ android {
     applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
     minSdk = 31
     targetSdk = 34
-    versionCode = 3
-    versionName = "1.2-real-glasses"
+    versionCode = 4
+    versionName = "1.3-real-glasses"
     ndk { abiFilters += listOf("arm64-v8a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
