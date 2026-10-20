@@ -1,0 +1,55 @@
+name: Compilar VisionClaw Android
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: samples/CameraAccessAndroid
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Verificar acceso a SDK de Meta
+        env:
+          META_PACKAGES_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+        run: |
+          if [ -z "$META_PACKAGES_TOKEN" ]; then
+            echo "::error::Falta el secreto META_PACKAGES_TOKEN con permiso read:packages"
+            exit 1
+          fi
+
+      - name: Preparar configuracion sin claves incrustadas
+        run: |
+          cp app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt.example app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt
+
+      - name: Compilar APK de prueba
+        env:
+          GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+        run: |
+          bash ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionClaw-Android-debug
+          path: samples/CameraAccessAndroid/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
