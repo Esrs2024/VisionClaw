@@ -92,7 +92,8 @@ jobs:
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-v4-Gafas-Reales-Xiaomi14-arm64.apk
-          cp apk-signature.txt apk-package.txt dist/\n          cd dist
+          cp apk-signature.txt apk-package.txt dist/
+          cd dist
           sha256sum VisionClaw-v4-Gafas-Reales-Xiaomi14-arm64.apk > SHA256SUMS.txt
 
       - name: Guardar APK
