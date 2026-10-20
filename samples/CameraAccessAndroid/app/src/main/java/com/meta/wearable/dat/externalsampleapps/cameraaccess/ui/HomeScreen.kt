@@ -44,8 +44,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.R
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.WearablesViewModel
 
 @Composable
@@ -87,8 +85,7 @@ fun HomeScreen(
       ) {
         Icon(
             painter = painterResource(id = R.drawable.camera_access_icon),
-            // Decorative branding: the tips below carry the screen's meaning.
-            contentDescription = null,
+            contentDescription = stringResource(R.string.camera_access_icon_description),
             tint = AppColor.DeepBlue,
             modifier = Modifier.size(80.dp * LocalDensity.current.density),
         )
@@ -133,11 +130,10 @@ fun HomeScreen(
             },
         )
 
-        // Phone mode is a capture-source choice, not a navigation state: the
-        // scaffold routes on it, and it sticks across launches like on iOS.
+        // Phone mode button
         SwitchButton(
             label = "Start on Phone",
-            onClick = { SettingsManager.captureSource = CaptureSource.PHONE },
+            onClick = { viewModel.navigateToPhoneMode() },
         )
       }
     }
@@ -154,8 +150,7 @@ private fun TipItem(
   Row(modifier = modifier.fillMaxWidth()) {
     Icon(
         painter = painterResource(id = iconResId),
-        // Decorative: the title and body beside it carry the meaning.
-        contentDescription = null,
+        contentDescription = "Tip icon",
         modifier = Modifier.padding(start = 4.dp, top = 4.dp).width(24.dp),
     )
     Spacer(modifier = Modifier.width(12.dp))

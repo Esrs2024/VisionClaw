@@ -1,9 +1,9 @@
-name: Compilar VisionClaw Android
+name: Compilar VisionClaw Gemini Direct
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, gemini-direct]
     paths:
       - '.github/workflows/android-apk.yml'
       - 'samples/CameraAccessAndroid/**'
@@ -64,14 +64,14 @@ jobs:
       - name: Preparar descarga y suma de comprobacion
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Xiaomi14-arm64.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Gemini-Direct-Xiaomi14-arm64.apk
           cd dist
-          sha256sum VisionClaw-Xiaomi14-arm64.apk > SHA256SUMS.txt
+          sha256sum VisionClaw-Gemini-Direct-Xiaomi14-arm64.apk > SHA256SUMS.txt
 
       - name: Guardar APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Xiaomi14-arm64
+          name: VisionClaw-Gemini-Direct-Xiaomi14-arm64
           path: samples/CameraAccessAndroid/dist/
           if-no-files-found: error
           retention-days: 14
