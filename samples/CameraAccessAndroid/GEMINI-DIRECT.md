@@ -13,7 +13,7 @@ del repositorio. No usa el servidor privado api.visionagents.app.
 
 La API key se introduce en el dispositivo, no en GitHub, y se cifra mediante
 Android Keystore. No se incluye en el APK. Se bloquean capturas de pantalla
-de la aplicación para evitar mostrar credenciales. Los modelos y cuotas
+en Ajustes para evitar mostrar credenciales. Los modelos y cuotas
 dependen del proyecto de Google; el modelo Live puede cambiarse en Ajustes.
 Modelo inicial: gemini-3.8-live, según la documentación consultada el 20/10/2026.
 

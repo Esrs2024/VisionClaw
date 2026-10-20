@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
     SettingsManager.init(this)
 
     // Keep screen on while streaming
-    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_SECURE)
+    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
     // First, ensure the app has necessary Android permissions
     checkPermissions {

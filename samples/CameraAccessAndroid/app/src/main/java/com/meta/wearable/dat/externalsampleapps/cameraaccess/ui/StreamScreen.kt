@@ -88,12 +88,9 @@ fun StreamScreen(
     // Clean up on exit
     DisposableEffect(Unit) {
         onDispose {
-            if (geminiUiState.isGeminiActive) {
-                geminiViewModel.stopSession()
-            }
-            if (webrtcUiState.isActive) {
-                webrtcViewModel.stopSession()
-            }
+            geminiViewModel.stopSession()
+            webrtcViewModel.stopSession()
+            streamViewModel.stopStream()
         }
     }
 

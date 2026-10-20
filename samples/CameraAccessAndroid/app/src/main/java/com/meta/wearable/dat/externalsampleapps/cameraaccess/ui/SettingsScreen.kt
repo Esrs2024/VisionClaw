@@ -42,6 +42,11 @@ fun SettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    androidx.compose.runtime.DisposableEffect(activity) {
+        activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
+    }
     var geminiAPIKey by remember { mutableStateOf(SettingsManager.geminiAPIKey) }
     var geminiModel by remember { mutableStateOf(SettingsManager.geminiModel) }
     var systemPrompt by remember { mutableStateOf(SettingsManager.geminiSystemPrompt) }
