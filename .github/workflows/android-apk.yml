@@ -2,19 +2,31 @@ name: Compilar VisionClaw Android
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'samples/CameraAccessAndroid/**'
 
 permissions:
   contents: read
 
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: samples/CameraAccessAndroid
     steps:
       - name: Descargar el codigo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Preparar Java
         uses: actions/setup-java@v4
@@ -28,12 +40,12 @@ jobs:
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Verificar acceso a SDK de Meta
+      - name: Comprobar que existe el secreto de paquetes
         env:
           META_PACKAGES_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
         run: |
           if [ -z "$META_PACKAGES_TOKEN" ]; then
-            echo "::error::Falta el secreto META_PACKAGES_TOKEN con permiso read:packages"
+            echo "::error::Guarda META_PACKAGES_TOKEN en Settings > Secrets and variables > Actions. Debe ser un token classic con read:packages."
             exit 1
           fi
 
@@ -41,15 +53,22 @@ jobs:
         run: |
           cp app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt.example app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/Secrets.kt
 
-      - name: Compilar APK de prueba
+      - name: Compilar APK ARM64 para Xiaomi 14
         env:
           GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+        run: bash ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Preparar descarga y suma de comprobacion
         run: |
-          bash ./gradlew :app:assembleDebug --no-daemon
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/VisionClaw-Xiaomi14-arm64.apk
+          cd dist
+          sha256sum VisionClaw-Xiaomi14-arm64.apk > SHA256SUMS.txt
 
       - name: Guardar APK
         uses: actions/upload-artifact@v4
         with:
-          name: VisionClaw-Android-debug
-          path: samples/CameraAccessAndroid/app/build/outputs/apk/debug/*.apk
+          name: VisionClaw-Xiaomi14-arm64
+          path: samples/CameraAccessAndroid/dist/
           if-no-files-found: error
+          retention-days: 14
