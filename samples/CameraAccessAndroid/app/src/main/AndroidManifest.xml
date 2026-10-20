@@ -28,6 +28,8 @@
             android:value="@string/mwdat_application_id"
             />
 
+        <meta-data android:name="com.meta.wearable.mwdat.CLIENT_TOKEN" android:value="@string/mwdat_client_token" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

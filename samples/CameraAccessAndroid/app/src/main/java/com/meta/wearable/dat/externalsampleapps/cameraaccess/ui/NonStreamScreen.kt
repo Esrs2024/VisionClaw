@@ -60,8 +60,6 @@ import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
 import com.meta.wearable.dat.core.types.RegistrationState
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.R
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.WearablesViewModel
 import kotlinx.coroutines.launch
 
@@ -76,7 +74,7 @@ fun NonStreamScreen(
   val gettingStartedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   val scope = rememberCoroutineScope()
   var dropdownExpanded by remember { mutableStateOf(false) }
-  val isDisconnectEnabled = uiState.registrationState is RegistrationState.Registered
+  val isDisconnectEnabled = uiState.registrationState == RegistrationState.REGISTERED
   val activity = LocalActivity.current
   val context = LocalContext.current
 
@@ -191,8 +189,8 @@ fun NonStreamScreen(
 
         // Start on Phone Button
         SwitchButton(
-            label = "Start on Phone",
-            onClick = { SettingsManager.captureSource = CaptureSource.PHONE },
+            label = "Usar cámara del móvil",
+            onClick = { viewModel.navigateToPhoneMode() },
         )
       }
 

@@ -14,7 +14,7 @@ plugins {
 
 android {
   namespace = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
-  compileSdk = 35
+  compileSdk = 36
 
   buildFeatures { buildConfig = true }
 
@@ -22,29 +22,26 @@ android {
     applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
     minSdk = 31
     targetSdk = 34
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 4
+    versionName = "1.3-real-glasses"
+    ndk { abiFilters += listOf("arm64-v8a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables { useSupportLibrary = true }
-    // Real phones are arm64; the x86/x86_64/arm32 native libs tripled the APK
-    // for the benefit of emulators nobody sideloads onto.
-    ndk { abiFilters += listOf("arm64-v8a") }
   }
 
   buildTypes {
     release {
-      isMinifyEnabled = true
-      isShrinkResources = true
+      isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("debug")
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
-  kotlinOptions { jvmTarget = "1.8" }
+  kotlinOptions { jvmTarget = "17" }
   buildFeatures { compose = true }
   composeOptions { kotlinCompilerExtensionVersion = "1.5.1" }
   packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
@@ -69,13 +66,9 @@ dependencies {
   implementation(libs.kotlinx.collections.immutable)
   implementation(libs.mwdat.core)
   implementation(libs.mwdat.camera)
-  implementation(libs.mwdat.mockdevice)
   // VisionClaw additions
   implementation(libs.okhttp)
   implementation(libs.webrtc)
-  implementation(libs.livekit.android)
-  implementation(libs.livekit.android.camerax)
-  implementation(libs.androidx.browser)
   implementation(libs.camerax.core)
   implementation(libs.camerax.camera2)
   implementation(libs.camerax.lifecycle)

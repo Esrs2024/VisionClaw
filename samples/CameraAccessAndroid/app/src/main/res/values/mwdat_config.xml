@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Public local-development values, not production credentials. -->
+    <string name="mwdat_application_id" translatable="false">0</string>
+    <string name="mwdat_client_token" translatable="false">0</string>
+</resources>

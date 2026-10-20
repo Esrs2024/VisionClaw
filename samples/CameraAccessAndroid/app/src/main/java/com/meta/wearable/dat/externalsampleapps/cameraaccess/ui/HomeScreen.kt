@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,8 +46,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.R
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource
-import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.WearablesViewModel
 
 @Composable
@@ -53,6 +53,7 @@ fun HomeScreen(
     viewModel: WearablesViewModel,
     modifier: Modifier = Modifier,
 ) {
+  val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val scrollState = rememberScrollState()
   val activity = LocalActivity.current
   val context = LocalContext.current
@@ -87,8 +88,7 @@ fun HomeScreen(
       ) {
         Icon(
             painter = painterResource(id = R.drawable.camera_access_icon),
-            // Decorative branding: the tips below carry the screen's meaning.
-            contentDescription = null,
+            contentDescription = stringResource(R.string.camera_access_icon_description),
             tint = AppColor.DeepBlue,
             modifier = Modifier.size(80.dp * LocalDensity.current.density),
         )
@@ -120,24 +120,24 @@ fun HomeScreen(
       ) {
         // App Registration Button
         Text(
-            text = stringResource(R.string.home_redirect_message),
+            text = "Meta AI debe autorizar el acceso a tus gafas. Para esta instalación personal, Meta exige activar su modo desarrollador.\nDispositivos detectados: ${uiState.devices.size}",
             color = Color.Gray,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp),
         )
         SwitchButton(
-            label = stringResource(R.string.register_button_title),
+            label = if (uiState.registrationState == com.meta.wearable.dat.core.types.RegistrationState.REGISTERING) "Esperando autorización de Meta AI…" else "Conectar mis Ray-Ban Meta",
+            enabled = uiState.isSdkReady && uiState.registrationState != com.meta.wearable.dat.core.types.RegistrationState.REGISTERING,
             onClick = {
               activity?.let { viewModel.startRegistration(it) }
                   ?: Toast.makeText(context, "Activity not available", Toast.LENGTH_SHORT).show()
             },
         )
 
-        // Phone mode is a capture-source choice, not a navigation state: the
-        // scaffold routes on it, and it sticks across launches like on iOS.
+        // Phone mode button
         SwitchButton(
-            label = "Start on Phone",
-            onClick = { SettingsManager.captureSource = CaptureSource.PHONE },
+            label = "Usar cámara del móvil",
+            onClick = { viewModel.navigateToPhoneMode() },
         )
       }
     }
@@ -154,8 +154,7 @@ private fun TipItem(
   Row(modifier = modifier.fillMaxWidth()) {
     Icon(
         painter = painterResource(id = iconResId),
-        // Decorative: the title and body beside it carry the meaning.
-        contentDescription = null,
+        contentDescription = "Tip icon",
         modifier = Modifier.padding(start = 4.dp, top = 4.dp).width(24.dp),
     )
     Spacer(modifier = Modifier.width(12.dp))
