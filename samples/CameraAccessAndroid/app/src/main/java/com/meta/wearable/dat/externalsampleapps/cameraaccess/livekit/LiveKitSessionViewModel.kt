@@ -675,6 +675,49 @@ class LiveKitSessionViewModel(
         }
     }
 
+    /**
+     * Local on-device mode: use the existing DAT camera pipeline without
+     * dialing a hosted LiveKit room. One coroutine owns teardown and startup
+     * so a late leave() cannot dispose the new glasses preview.
+     */
+    fun startLocalGlassesPreview() {
+        viewModelScope.launch {
+            disconnectInternal()
+            stopPreview()
+            stopGlassesFeed()
+            glassesCapturer = null
+            _uiState.update { LiveKitUiState() }
+            startPreview()
+        }
+    }
+
+    /**
+     * Capture a single real video frame from the active DAT glasses preview.
+     * Null means no frame arrived; callers must not pretend the agent saw
+     * the scene. This method never sends a frame anywhere by itself.
+     */
+    suspend fun captureLocalGlassesJpeg(): ByteArray? {
+        if (SettingsManager.captureSource != CaptureSource.GLASSES ||
+            !_uiState.value.glassesStreaming || _uiState.value.previewTrack == null) {
+            return null
+        }
+        val bitmap = kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Bitmap?> { continuation ->
+                frameGrabber.requestFrame { frame ->
+                    if (continuation.isActive) {
+                        continuation.resume(frame, onCancellation = null)
+                    }
+                }
+            }
+        } ?: return null
+        return withContext(Dispatchers.Default) {
+            ByteArrayOutputStream().use { buffer ->
+                val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, 75, buffer)
+                if (ok) buffer.toByteArray() else null
+            }
+        }
+    }
+
     // MARK: Preview (local, unpublished video between calls)
 
     fun startPreview() {
