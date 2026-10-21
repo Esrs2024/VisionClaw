@@ -1,5 +1,6 @@
 package com.meta.wearable.dat.externalsampleapps.cameraaccess.ui
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
@@ -21,13 +22,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -36,6 +42,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.local.LocalOpenClawClient
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.LiveKitSessionViewModel
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.WearablesViewModel
+import com.meta.wearable.dat.core.types.Permission
+import com.meta.wearable.dat.core.types.PermissionStatus
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import java.util.Locale
 import kotlinx.coroutines.launch
@@ -48,9 +58,19 @@ import kotlinx.coroutines.launch
  * claim that DAT camera streaming is attached: this mode is audio+documents.
  */
 @Composable
-fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) {
+fun LocalMoreThanTilesScreen(
+    wearableViewModel: WearablesViewModel,
+    previewViewModel: LiveKitSessionViewModel,
+    onRequestWearablesPermission: suspend (Permission) -> PermissionStatus,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    val wearableState by wearableViewModel.uiState.collectAsStateWithLifecycle()
+    val previewState by previewViewModel.uiState.collectAsStateWithLifecycle()
+    var includePicture by remember { mutableStateOf(true) }
+    var voiceErrors by remember { mutableStateOf(0) }
     var token by remember { mutableStateOf(SettingsManager.localOpenClawToken) }
     var input by remember { mutableStateOf("") }
     var answer by remember { mutableStateOf("Aquí aparecerá la respuesta de MoreThanTiles.") }
@@ -71,6 +91,21 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
         }
+    }
+
+    // The actual camera is the SDK stream, not a simulator or phone-camera substitute.
+    // Ask Meta permission before starting. No hosted gateway or LiveKit room is dialed.
+    LaunchedEffect(Unit) {
+        SettingsManager.captureSource = com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource.GLASSES
+        wearableViewModel.startMonitoring()
+    }
+    LaunchedEffect(wearableState.isRegistered, wearableState.hasActiveDevice) {
+        if (wearableState.isRegistered && wearableState.hasActiveDevice && !wearableState.isStreaming) {
+            wearableViewModel.navigateToStreaming(onRequestWearablesPermission, quietIfUnavailable = true)
+        }
+    }
+    LaunchedEffect(wearableState.isStreaming) {
+        if (wearableState.isStreaming) previewViewModel.startLocalGlassesPreview()
     }
 
     fun routeAudioToGlasses(): Boolean {
@@ -118,8 +153,16 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
         status = "Consultando MoreThanTiles en Termux..."
         scope.launch {
             try {
-                answer = LocalOpenClawClient.ask(token, text)
-                status = "Respuesta recibida de MoreThanTiles."
+                val photo = if (includePicture && previewState.glassesStreaming) {
+                    status = "Capturando una imagen REAL de las gafas..."
+                    previewViewModel.captureLocalGlassesJpeg()
+                } else null
+                // A failed capture is never described to the agent as a real view.
+                status = if (photo != null) "Enviando voz + imagen real a MoreThanTiles..." else
+                    "Enviando texto a MoreThanTiles (sin imagen de gafas)..."
+                answer = LocalOpenClawClient.ask(token, text, photo)
+                status = if (photo != null) "Respuesta con imagen real de gafas." else
+                    "Respuesta recibida, pero SIN imagen de las gafas."
                 busy = false
                 speak(answer)
                 if (!ttsReady && handsFree) {
@@ -149,7 +192,11 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
             override fun onEndOfSpeech() { listening = false }
             override fun onError(error: Int) {
                 listening = false
-                if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
+                voiceErrors += 1
+                if (voiceErrors >= 3) {
+                    handsFree = false
+                    status = "Tres fallos de voz seguidos. Modo manos libres detenido."
+                } else if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ||
                     error == SpeechRecognizer.ERROR_CLIENT) {
                     handsFree = false
                     status = "El reconocimiento de voz no está disponible (error " + error + ")."
@@ -162,6 +209,7 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
                 val recognized = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull().orEmpty().trim()
                 if (recognized.isNotBlank()) {
+                    voiceErrors = 0
                     send(recognized)
                 } else if (handsFree) {
                     handler.postDelayed({ listenAgain() }, 900L)
@@ -208,6 +256,32 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
     ) {
         Text("MoreThanTiles · voz local", style = MaterialTheme.typography.headlineSmall)
         Text("Habla con el agente de OpenClaw instalado en este Xiaomi. Sin servidor VisionClaw externo.")
+        Text(
+            when {
+                !wearableState.isRegistered -> "Ray-Ban: todavía no registradas en esta app."
+                !wearableState.hasActiveDevice -> "Ray-Ban registradas, pero no detectadas ahora mismo."
+                previewState.glassesStreaming -> "Ray-Ban: vídeo REAL de las gafas disponible."
+                else -> "Ray-Ban detectadas; esperando permiso o vídeo de la cámara."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (!wearableState.isRegistered) {
+            val activity = context as? Activity
+            OutlinedButton(
+                onClick = { if (activity != null) wearableViewModel.startRegistration(activity) },
+                enabled = activity != null,
+            ) { Text("Conectar Ray-Ban Meta con Meta AI") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = includePicture,
+                onCheckedChange = { includePicture = it },
+            )
+            Text(
+                " Incluir una foto real de las gafas al enviar cada pregunta (si hay vídeo).",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         Text(audioStatus, style = MaterialTheme.typography.bodySmall)
         Text(status, color = MaterialTheme.colorScheme.primary)
 
@@ -257,9 +331,10 @@ fun LocalMoreThanTilesScreen(onExit: () -> Unit, modifier: Modifier = Modifier) 
         Text("Respuesta del agente:", style = MaterialTheme.typography.titleMedium)
         Text(answer)
         Text(
-            "Esta modalidad utiliza el micrófono y la salida Bluetooth que Android seleccione. " +
-                "No transmite la cámara de las gafas ni instala la plantilla por sí sola. " +
-                "El archivo PDF debe generarlo morethantiles-docs en Termux.",
+            "La app envía una foto de la cámara DAT de las Ray-Ban al agente solo " +
+                "cuando la opción de foto está activada y la transmisión existe. " +
+                "La voz utiliza el servicio de reconocimiento Android y la salida Bluetooth. " +
+                "La creación de PDF sigue dependiendo de morethantiles-docs en Termux.",
             style = MaterialTheme.typography.bodySmall,
         )
         OutlinedButton(onClick = {
