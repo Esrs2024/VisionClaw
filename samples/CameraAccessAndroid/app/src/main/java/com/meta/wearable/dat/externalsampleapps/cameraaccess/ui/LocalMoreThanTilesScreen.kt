@@ -96,6 +96,8 @@ fun LocalMoreThanTilesScreen(
     // The actual camera is the SDK stream, not a simulator or phone-camera substitute.
     // Ask Meta permission before starting. No hosted gateway or LiveKit room is dialed.
     LaunchedEffect(Unit) {
+        // Stop any cloud session before using the phone microphone locally.
+        previewViewModel.leave()
         SettingsManager.captureSource = com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource.GLASSES
         wearableViewModel.startMonitoring()
     }
