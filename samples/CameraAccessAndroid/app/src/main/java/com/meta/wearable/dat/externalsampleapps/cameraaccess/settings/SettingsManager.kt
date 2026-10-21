@@ -49,6 +49,22 @@ object SettingsManager {
     private val _captureSourceFlow = MutableStateFlow(CaptureSource.PHONE)
     val captureSourceFlow: StateFlow<CaptureSource> = _captureSourceFlow.asStateFlow()
 
+    // Local mode is independent of the hosted gateway / LiveKit trial.
+    // The credential never travels to the hosted gateway.
+    private val _localModeFlow = MutableStateFlow(false)
+    val localModeFlow: StateFlow<Boolean> = _localModeFlow.asStateFlow()
+
+    var localMode: Boolean
+        get() = _localModeFlow.value
+        set(value) {
+            prefs.edit().putBoolean("localMode", value).apply()
+            _localModeFlow.value = value
+        }
+
+    var localOpenClawToken: String
+        get() = prefs.getString("localOpenClawToken", "").orEmpty()
+        set(value) = prefs.edit().putString("localOpenClawToken", value).apply()
+
     // Whether the app may show anything beyond the sign-in gate. A flow so a
     // token cleared from deep inside a call (revoked account -> 401) drops the
     // root scaffold back to the gate without a settings round-trip.
@@ -58,6 +74,7 @@ object SettingsManager {
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _captureSourceFlow.value = CaptureSource.fromValue(prefs.getString("captureSource", null))
+        _localModeFlow.value = prefs.getBoolean("localMode", false)
         refreshUnlocked()
     }
 
@@ -148,6 +165,7 @@ object SettingsManager {
     fun resetAll() {
         prefs.edit().clear().apply()
         _captureSourceFlow.value = CaptureSource.PHONE
+        _localModeFlow.value = false
         refreshUnlocked()
     }
 }
