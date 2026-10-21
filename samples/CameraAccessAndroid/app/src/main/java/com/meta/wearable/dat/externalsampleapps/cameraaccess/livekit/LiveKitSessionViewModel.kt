@@ -2,6 +2,9 @@ package com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -16,6 +19,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
+import com.twilio.audioswitch.AudioDevice
 import com.meta.wearable.dat.camera.StreamSession
 import com.meta.wearable.dat.camera.startStreamSession
 import com.meta.wearable.dat.camera.types.StreamConfiguration
@@ -197,6 +201,77 @@ class LiveKitSessionViewModel(
         // A video-call SDK defaults to the selfie camera; this app is a pair
         // of eyes on the world, so it opens on the back camera.
         videoTrackCaptureDefaults = LocalVideoTrackOptions(position = CameraPosition.BACK)
+    }
+
+    // Audio must be a two-way Bluetooth call route (HFP/BLE), not just A2DP
+    // playback. Otherwise WebRTC silently listens to the phone's microphone.
+    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var glassesAudioWatchJob: Job? = null
+
+    private fun bluetoothCallAudioIsActive(): Boolean {
+        val device = audioManager.communicationDevice ?: return false
+        return device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            device.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+    }
+
+    /**
+     * Fail closed in glasses mode. Never open a phone microphone just because
+     * the Ray-Ban hands-free audio route is not ready yet. LiveKit owns audio
+     * routing; use its AudioSwitch rather than fighting it with AudioManager.
+     */
+    private suspend fun enableGlassesMicrophone() {
+        val audioSwitch = room.audioSwitchHandler
+            ?: throw IOException("La llamada no tiene control de audio Bluetooth")
+        var bluetoothSelected = false
+        repeat(32) {
+            val headset = audioSwitch.availableAudioDevices
+                .filterIsInstance<AudioDevice.BluetoothHeadset>()
+                .firstOrNull()
+            if (headset != null) {
+                if (audioSwitch.selectedAudioDevice !is AudioDevice.BluetoothHeadset) {
+                    audioSwitch.selectDevice(headset)
+                }
+                if (audioSwitch.selectedAudioDevice is AudioDevice.BluetoothHeadset) {
+                    bluetoothSelected = true
+                    return@repeat
+                }
+            }
+            delay(250)
+        }
+        if (!bluetoothSelected) {
+            throw IOException("No hay auriculares Bluetooth de llamadas. Conecta las Ray-Ban Meta")
+        }
+
+        room.localParticipant.setMicrophoneEnabled(true)
+        repeat(20) {
+            if (bluetoothCallAudioIsActive()) {
+                Log.i(TAG, "Two-way glasses Bluetooth audio active: " +
+                    audioManager.communicationDevice?.productName)
+                return
+            }
+            delay(250)
+        }
+        room.localParticipant.setMicrophoneEnabled(false)
+        throw IOException("Las Ray-Ban no están usando el micrófono Bluetooth de llamadas")
+    }
+
+    /** Stop the call on audio disconnection instead of switching silently to the phone. */
+    private fun watchGlassesAudio() {
+        glassesAudioWatchJob?.cancel()
+        glassesAudioWatchJob = viewModelScope.launch {
+            while (_uiState.value.state == SessionState.Connected &&
+                _uiState.value.isGlassesSource) {
+                delay(1500)
+                if (_uiState.value.state != SessionState.Connected) break
+                if (!bluetoothCallAudioIsActive()) {
+                    Log.w(TAG, "Glasses audio route lost; stopping microphone and call")
+                    room.localParticipant.setMicrophoneEnabled(false)
+                    disconnectInternal(failure = "Audio de las gafas desconectado")
+                    startPreview()
+                    break
+                }
+            }
+        }
     }
 
     private val frameGrabber = FrameGrabber()
@@ -515,8 +590,8 @@ class LiveKitSessionViewModel(
      */
     fun autoStartIfNeeded(): Boolean {
         if (autoStarted) return false
-        // The phone camera needs CAMERA; glasses video does not (mic stays
-        // the phone's in both modes).
+        // The phone camera needs CAMERA; glasses video does not.
+        // Both modes need RECORD_AUDIO, but the glasses route is verified first.
         val cameraNeeded = SettingsManager.captureSource == CaptureSource.PHONE
         val granted = ContextCompat.checkSelfPermission(
             getApplication(),
@@ -567,7 +642,11 @@ class LiveKitSessionViewModel(
             room.connect(ticket.url, ticket.token)
             connectedEngine = engine
             connectedAssistive = assistive
-            room.localParticipant.setMicrophoneEnabled(true)
+            if (glasses) {
+                enableGlassesMicrophone()
+            } else {
+                room.localParticipant.setMicrophoneEnabled(true)
+            }
             // Video failure (emulator, permission denied, glasses hiccup)
             // degrades to voice-only rather than killing the call.
             try {
@@ -590,6 +669,9 @@ class LiveKitSessionViewModel(
                 attachGrabber(track)
                 _uiState.update { it.copy(localVideoTrack = track) }
             } catch (e: Exception) {
+                if (glasses) {
+                    throw IOException("No se ha podido iniciar el vídeo de las Ray-Ban", e)
+                }
                 Log.w(TAG, "video unavailable, voice-only: ${e.message}")
             }
             _uiState.update {
@@ -600,7 +682,10 @@ class LiveKitSessionViewModel(
                     videoEstablishing = glasses && !it.glassesStreaming,
                 )
             }
-            if (glasses) startVideoEstablishGrace()
+            if (glasses) {
+                startVideoEstablishGrace()
+                watchGlassesAudio()
+            }
             refreshAgentStatus()
         } catch (e: Exception) {
             Log.w(TAG, "call failed: ${e.message}")
@@ -638,6 +723,8 @@ class LiveKitSessionViewModel(
      * announcements and cues report a lost connection, not a hang-up.
      */
     private fun disconnectInternal(failure: String? = null) {
+        glassesAudioWatchJob?.cancel()
+        glassesAudioWatchJob = null
         room.disconnect()
         attachGrabber(null)
         connectedEngine = null

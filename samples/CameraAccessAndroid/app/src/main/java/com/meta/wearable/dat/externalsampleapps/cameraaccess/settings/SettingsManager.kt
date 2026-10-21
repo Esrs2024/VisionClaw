@@ -25,10 +25,9 @@ enum class IntelligenceEngine(val value: String, val label: String) {
 
 /**
  * Where video comes from. The app is a vision assistant first -- it opens
- * looking at the world through the phone -- and glasses are one capture
- * source, selected in Settings, rather than a mode the user must decide about
- * at launch. Exposed as a flow so the root scaffold swaps the capture
- * pipeline live when the setting changes.
+ * looking at the world through Ray-Ban glasses by default. Phone mode remains
+ * an explicit optional fallback in Settings. Exposed as a flow so the root
+ * scaffold swaps the capture pipeline live when the setting changes.
  */
 enum class CaptureSource(val value: String, val label: String) {
     PHONE("phone", "Phone Camera"),
@@ -36,7 +35,7 @@ enum class CaptureSource(val value: String, val label: String) {
 
     companion object {
         fun fromValue(value: String?): CaptureSource =
-            entries.firstOrNull { it.value == value } ?: PHONE
+            entries.firstOrNull { it.value == value } ?: GLASSES
     }
 }
 
@@ -46,7 +45,7 @@ object SettingsManager {
 
     private lateinit var prefs: SharedPreferences
 
-    private val _captureSourceFlow = MutableStateFlow(CaptureSource.PHONE)
+    private val _captureSourceFlow = MutableStateFlow(CaptureSource.GLASSES)
     val captureSourceFlow: StateFlow<CaptureSource> = _captureSourceFlow.asStateFlow()
 
     // Whether the app may show anything beyond the sign-in gate. A flow so a
@@ -57,6 +56,14 @@ object SettingsManager {
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // One-time transition for older installs that used the phone by default.
+        // Later explicit changes to captureSource are preserved.
+        if (!prefs.getBoolean("glassesFirstMigrated", false)) {
+            prefs.edit()
+                .putString("captureSource", CaptureSource.GLASSES.value)
+                .putBoolean("glassesFirstMigrated", true)
+                .apply()
+        }
         _captureSourceFlow.value = CaptureSource.fromValue(prefs.getString("captureSource", null))
         refreshUnlocked()
     }
@@ -147,7 +154,7 @@ object SettingsManager {
 
     fun resetAll() {
         prefs.edit().clear().apply()
-        _captureSourceFlow.value = CaptureSource.PHONE
+        _captureSourceFlow.value = CaptureSource.GLASSES
         refreshUnlocked()
     }
 }
