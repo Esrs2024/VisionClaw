@@ -208,6 +208,9 @@ private fun SettingsMainScreen(
 
             // Gateway status + navigation rows
             SectionHeader("Gateway")
+            TextButton(onClick = { SettingsManager.localMode = true }) {
+                Text("Abrir MoreThanTiles local con voz")
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
