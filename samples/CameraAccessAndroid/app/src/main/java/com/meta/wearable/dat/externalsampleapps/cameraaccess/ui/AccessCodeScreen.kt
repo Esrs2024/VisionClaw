@@ -64,6 +64,7 @@ private fun newNonce(): String {
 @Composable
 fun AccessCodeScreen(
     onUnlocked: () -> Unit,
+    onUseLocal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -205,6 +206,11 @@ fun AccessCodeScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             Text("VisionClaw", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onUseLocal,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("MoreThanTiles local · voz y OpenClaw") }
             Spacer(modifier = Modifier.height(12.dp))
 
             val pending = pendingEmail

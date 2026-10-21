@@ -3,7 +3,7 @@ name: Compilar VisionClaw Android
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'fix/**']
     paths:
       - '.github/workflows/android-apk.yml'
       - 'samples/CameraAccessAndroid/**'
@@ -60,6 +60,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
         run: bash ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Verificar instalabilidad de APK y firma Android
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          unzip -tq "$APK" >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee /tmp/morethantiles-package.txt
+          grep -q "package: name='com.morethantiles.visionclaw'" /tmp/morethantiles-package.txt
 
       - name: Preparar descarga y suma de comprobacion
         run: |

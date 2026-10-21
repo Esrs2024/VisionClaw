@@ -19,11 +19,11 @@ android {
   buildFeatures { buildConfig = true }
 
   defaultConfig {
-    applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
+    applicationId = "com.morethantiles.visionclaw"
     minSdk = 31
     targetSdk = 34
     versionCode = 1
-    versionName = "1.0"
+    versionName = "1.1-morethantiles"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables { useSupportLibrary = true }

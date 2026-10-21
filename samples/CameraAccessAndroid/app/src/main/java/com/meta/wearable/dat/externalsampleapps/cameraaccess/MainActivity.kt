@@ -79,7 +79,9 @@ class MainActivity : ComponentActivity() {
       // The DAT SDK starts lazily so phone mode never pays its startup cost:
       // startMonitoring runs Wearables.initialize via WearablesInit, and the
       // scaffold triggers the same path when the user switches to glasses.
-      if (SettingsManager.captureSource == CaptureSource.GLASSES) {
+      if (SettingsManager.localMode) {
+        // Do not start cloud LiveKit when using the local-only Termux voice mode.
+      } else if (SettingsManager.captureSource == CaptureSource.GLASSES) {
         viewModel.startMonitoring()
       } else {
         // First-ever launch: the phone screen composed before the grant and

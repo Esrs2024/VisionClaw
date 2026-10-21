@@ -73,11 +73,30 @@ fun CameraAccessScaffold(
   // account back here mid-session. Re-checked when Settings closes because
   // the token can be edited or reset there.
   val unlocked by SettingsManager.unlockedFlow.collectAsStateWithLifecycle()
+  val localMode by SettingsManager.localModeFlow.collectAsStateWithLifecycle()
+  if (localMode) {
+    LocalMoreThanTilesScreen(
+        wearableViewModel = viewModel,
+        previewViewModel = liveKitViewModel,
+        onRequestWearablesPermission = onRequestWearablesPermission,
+        onExit = {
+            liveKitViewModel.leave()
+            viewModel.navigateToDeviceSelection()
+            SettingsManager.localMode = false
+        },
+        modifier = modifier,
+    )
+    return
+  }
   LaunchedEffect(uiState.isSettingsVisible) {
     if (!uiState.isSettingsVisible) SettingsManager.refreshUnlocked()
   }
   if (!unlocked) {
-    AccessCodeScreen(onUnlocked = { SettingsManager.refreshUnlocked() }, modifier = modifier)
+    AccessCodeScreen(
+        onUnlocked = { SettingsManager.refreshUnlocked() },
+        onUseLocal = { SettingsManager.localMode = true },
+        modifier = modifier,
+    )
     return
   }
 
