@@ -1,5 +1,6 @@
 package com.meta.wearable.dat.externalsampleapps.cameraaccess.local
 
+import android.util.Base64
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -50,14 +51,27 @@ object LocalOpenClawClient {
         }
     }
 
-    suspend fun ask(token: String, message: String): String = withContext(Dispatchers.IO) {
+    suspend fun ask(token: String, message: String, realGlassesJpeg: ByteArray? = null): String = withContext(Dispatchers.IO) {
         require(message.isNotBlank())
+        // Camera frames stay on-device until the user enables picture sharing
+        // and sends one. OpenClaw receives an inline JPEG, never an invented view.
+        val content: Any = if (realGlassesJpeg != null) {
+            val encoded = Base64.encodeToString(realGlassesJpeg, Base64.NO_WRAP)
+            org.json.JSONArray()
+                .put(JSONObject().put("type", "text").put("text", message))
+                .put(
+                    JSONObject()
+                        .put("type", "image_url")
+                        .put("image_url", JSONObject().put("url", "data:image/jpeg;base64," + encoded))
+                )
+        } else message
+
         val body = JSONObject()
             .put("model", AGENT)
             .put("stream", false)
             .put("user", "visionclaw-local-morethantiles")
             .put("messages", org.json.JSONArray().put(
-                JSONObject().put("role", "user").put("content", message)
+                JSONObject().put("role", "user").put("content", content)
             ))
             .toString().toRequestBody("application/json; charset=utf-8".toMediaType())
 
