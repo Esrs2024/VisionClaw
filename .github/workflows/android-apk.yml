@@ -3,7 +3,7 @@ name: Compilar VisionClaw Android
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'fix/**']
     paths:
       - '.github/workflows/android-apk.yml'
       - 'samples/CameraAccessAndroid/**'
