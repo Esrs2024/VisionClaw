@@ -106,5 +106,36 @@ class Gateway(private val state: (String)->Unit, private val answer: (String)->U
         status(if(ok)"Enviando imagen y observaciones a OpenClaw…"
                else "No se pudo enviar la inspección.")
     }
+    /**
+     * Send ONE real Meta-glasses frame to the vision-capable OpenClaw agent.
+     * No simulated/phone frames, no image fallback and no app-side provider key.
+     */
+    fun askMuse(words: String, jpeg: ByteArray): Boolean {
+        if (!connected) {
+            status("OpenClaw no está conectado. No se ha enviado imagen.")
+            return false
+        }
+        if (jpeg.isEmpty()) {
+            status("No llegó imagen real de las gafas. No se envió la pregunta.")
+            return false
+        }
+        val prompt = "MUSE VISION: La siguiente imagen es un fotograma REAL de las Ray-Ban Meta Gen 2. " +
+            "Describe SOLO lo que realmente puedes identificar, en español sencillo y breve. " +
+            "No inventes objetos, personas, medidas o detalles no visibles. " +
+            "Si no recibes imagen, dilo explícitamente. Pregunta: " + words
+        val params = JSONObject().put("sessionKey", session)
+            .put("message", prompt).put("deliver", false)
+            .put("idempotencyKey", UUID.randomUUID().toString())
+            .put("attachments", JSONArray().put(JSONObject()
+                .put("type", "image").put("mimeType", "image/jpeg")
+                .put("content", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
+        requestId = UUID.randomUUID().toString()
+        val sent = socket?.send(JSONObject().put("type", "req").put("id", requestId)
+            .put("method", "chat.send").put("params", params).toString()) ?: false
+        status(if (sent) "Enviada imagen real Ray-Ban a OpenClaw (Muse)." else
+               "No se pudo enviar la imagen real a OpenClaw.")
+        return sent
+    }
+
     fun disconnect(){socket?.close(1000,"end");socket=null;connected=false}
 }
