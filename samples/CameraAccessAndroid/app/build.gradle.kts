@@ -24,8 +24,8 @@ android {
     applicationId = "com.morethantiles.rayban.visionclaw"
     minSdk = 31
     targetSdk = 34
-    versionCode = 2
-    versionName = "1.0"
+    versionCode = 3
+    versionName = "1.1-local"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     vectorDrawables { useSupportLibrary = true }
