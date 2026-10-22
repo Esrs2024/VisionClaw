@@ -84,7 +84,8 @@ class MainActivity : ComponentActivity() {
     private var speechStateJob: Job? = null
     @Volatile private var lastJpeg: ByteArray? = null
     private var cameraLive = false
-    private var lastFrameMillis = 0L
+    @Volatile private var lastFrameMillis = 0L
+    private var museQuestionPending = false
     private var lastPhotoMillis = 0L
 
     private val bluetoothPermission = registerForActivityResult(
@@ -229,6 +230,7 @@ class MainActivity : ComponentActivity() {
         }
         button("COMENZAR INSPECCIÓN CON GAFAS") { startInspection() }
         button("GUARDAR FOTO REAL") { snapshot() }
+        button("MUSE: ¿QUÉ ESTOY VIENDO?") { askMuse("Muse, ¿qué estoy viendo?") }
         button("GENERAR PDF DEL PRESUPUESTO") { exportPdf() }
         button("Añadir imagen de mi firma") { signaturePicker.launch("image/*") }
         signatureConsent = CheckBox(this).apply {
@@ -467,17 +469,50 @@ class MainActivity : ComponentActivity() {
         say("Fotografía real guardada.")
     }
 
+    /**
+     * Ask Muse only when a FRESH camera frame has arrived from Meta DAT.
+     * The user-triggered button/voice command is the only vision upload trigger.
+     * We never substitute the phone camera or an old cached photo.
+     */
+    private fun askMuse(words: String) {
+        if (!running) {
+            show("Primero pulsa COMENZAR INSPECCIÓN CON GAFAS.")
+            return
+        }
+        val frame = lastJpeg
+        val age = SystemClock.elapsedRealtime() - lastFrameMillis
+        if (!cameraLive || frame == null || age > 6000L || age < 0L) {
+            show("No hay una imagen RECIENTE de las Ray-Ban. Muse no ha visto nada.")
+            return
+        }
+        if (!gateway.connected) {
+            show("Fotograma real recibido, pero falta conectar OpenClaw local para usar Muse.")
+            return
+        }
+        museQuestionPending = gateway.askMuse(words, frame)
+        if (museQuestionPending) {
+            transcript.text = "Tú: $words (imagen REAL enviada)"
+        }
+    }
+
     private fun onSpeech(words: String) {
         if (!running || speaking) return
         val command = words.trim()
         if (command.isBlank()) return
         transcript.text = "Tú: $command"
+        val lower = command.lowercase(Locale.forLanguageTag("es-ES"))
+        if (lower.contains("muse") || lower.contains("qué estoy viendo") ||
+            lower.contains("que estoy viendo") || lower.contains("qué veo") ||
+            lower.contains("que veo") || lower.contains("qué ves") ||
+            lower.contains("que ves")) {
+            askMuse(command)
+            return
+        }
         inspect.client = client.text.toString().ifBlank { inspect.client }
         inspect.address = address.text.toString().ifBlank { inspect.address }
         val photo = if (cameraLive) lastJpeg else null
         inspect.addObservation(command, photo)
         updateInfo()
-        val lower = command.lowercase(Locale.forLanguageTag("es-ES"))
         when {
             lower.contains("guardar foto") || lower.contains("hacer foto") -> snapshot()
             lower.contains("generar presupuesto") || lower.contains("generar pdf") ||
@@ -488,6 +523,12 @@ class MainActivity : ComponentActivity() {
 
     private fun receiveAgent(message: String) {
         runOnUiThread {
+            if (museQuestionPending) {
+                museQuestionPending = false
+                transcript.text = "Muse: $message"
+                say(message)
+                return@runOnUiThread
+            }
             val response = inspect.receive(message)
             client.setText(inspect.client)
             address.setText(inspect.address)
@@ -553,6 +594,7 @@ class MainActivity : ComponentActivity() {
 
     private fun stopInspection() {
         running = false
+        museQuestionPending = false
         cameraLive = false
         speechStarted = false
         cameraStarted = false
