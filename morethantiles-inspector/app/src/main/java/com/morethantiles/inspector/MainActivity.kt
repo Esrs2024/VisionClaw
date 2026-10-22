@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         inspect = Inspection(this)
         gateway = Gateway(
@@ -165,6 +166,18 @@ class MainActivity : ComponentActivity() {
                     }
                 })
             }
+        }
+        } catch (fatal: Throwable) {
+            Log.e("MTTInspector", "Inspección: error al abrir pantalla", fatal)
+            val explanation = TextView(this).apply {
+                textSize = 17f
+                setPadding(36, 48, 36, 36)
+                text = "MoreThanTiles Inspector no pudo iniciar.\n" +
+                    "Error: " + fatal.javaClass.simpleName + "\n" +
+                    (fatal.message ?: "Sin descripción") + "\n\n" +
+                    "La aplicación sigue abierta para poder mostrar el error."
+            }
+            setContentView(explanation)
         }
     }
 
