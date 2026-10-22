@@ -73,10 +73,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
         ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if(result.values.all{it}) startInspection() else show("Faltan permisos Android de cámara, voz o Bluetooth.")
     }
-    private val metaPermission=registerForActivityResult(Wearables.RequestPermissionContract()) { result ->
-        if(result.getOrDefault(PermissionStatus.Denied)==PermissionStatus.Granted) startVideo()
-        else show("Meta no autorizó la cámara de las gafas. Vincula la aplicación con las Ray-Ban.")
-    }
+    private var metaPermission: androidx.activity.result.ActivityResultLauncher<Permission>? = null
     private val signaturePicker=registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if(uri!=null) {
             try {
@@ -98,6 +95,14 @@ class MainActivity : ComponentActivity(), RecognitionListener {
         bridge=Gateway({s->show(s);if(s.startsWith("OpenClaw conectado"))activateAudio()},
             {s->onAgent(s)})
         makeScreen()
+        try {
+            metaPermission = registerForActivityResult(Wearables.RequestPermissionContract()) { result ->
+                if(result.getOrDefault(PermissionStatus.Denied)==PermissionStatus.Granted) startVideo()
+                else show("Meta no autorizó la cámara de las gafas. Vincula la aplicación con las Ray-Ban.")
+            }
+        } catch (failure: Throwable) {
+            show("Error al preparar Meta Wearables. La aplicación continúa abierta.")
+        }
         tts=TextToSpeech(this){ state ->
             ttsReady=state==TextToSpeech.SUCCESS
             if(ttsReady){
@@ -197,7 +202,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
                 try{
                     val check=Wearables.checkPermissionStatus(Permission.CAMERA)
                     if(check.getOrNull()==PermissionStatus.Granted)startVideo()
-                    else metaPermission.launch(Permission.CAMERA)
+                    else metaPermission?.launch(Permission.CAMERA) ?: show("Meta Wearables no disponible.")
                 }catch(e:Exception){show("Permiso Meta: "+e.message)}
             }
         }catch(e:Exception){show("No se pudo iniciar Meta Wearables: "+e.message)}
