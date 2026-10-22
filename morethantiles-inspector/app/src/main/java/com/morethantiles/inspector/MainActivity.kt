@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
     }
     private fun refresh(){
         runOnUiThread{
-            details.text="Cámara: "+if(cameraLive)"transmitiendo fotogramas" else "sin imagen"+
+            details.text="Cámara: "+(if(cameraLive)"transmitiendo fotogramas" else "sin imagen")+
                 " | Fotos: "+inspect.photos+" | Partidas: "+inspect.works.size
         }
     }
@@ -212,8 +212,8 @@ class MainActivity : ComponentActivity(), RecognitionListener {
             show("Conectando cámara REAL Ray-Ban…")
             stateJob=lifecycleScope.launch {
                 s.state.collect {state->
-                    cameraLive=state==StreamSessionState.STREAMING
-                    if(cameraLive)show("La cámara está transmitiendo fotogramas reales.")
+                    if(state!=StreamSessionState.STREAMING)cameraLive=false
+                    if(state==StreamSessionState.STREAMING)show("Cámara iniciada: esperando fotograma REAL…")
                     else show("Estado de cámara Ray-Ban: "+state.toString())
                     refresh()
                 }
@@ -231,6 +231,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
                         buf.get(data)
                         val jpeg=toJpeg(data,w,h)
                         currentJpeg=jpeg
+                        if(!cameraLive){cameraLive=true;show("Cámara comprobada: fotogramas reales recibidos.")}
                         if(now-lastPhotoAt>7000L){
                             lastPhotoAt=now
                             inspect.savePhoto(jpeg)
@@ -355,7 +356,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
         refresh()
         if(lower.contains("generar")&&lower.contains("pdf") ||
            lower.contains("exportar")&&lower.contains("presupuesto")){
-            exportPdf()
+            exportPdf(fromVoice=true)
         }else if(lower.contains("hacer foto")||lower.contains("guardar foto")){
             snapshot()
         }else{
@@ -374,7 +375,7 @@ class MainActivity : ComponentActivity(), RecognitionListener {
     override fun onPartialResults(partialResults:Bundle?){}
     override fun onEvent(eventType:Int,params:Bundle?){}
 
-    private fun exportPdf(){
+    private fun exportPdf(fromVoice:Boolean=false){
         inspect.client=client.text.toString().ifBlank{inspect.client}
         inspect.address=address.text.toString().ifBlank{inspect.address}
         inspect.signatureAllowed=signatureConsent.isChecked
@@ -384,13 +385,15 @@ class MainActivity : ComponentActivity(), RecognitionListener {
                 if(inspect.readyForOfficial())" (partidas completas)" else " (BORRADOR)")
             speak(if(inspect.readyForOfficial())"Presupuesto generado. Revisa antes de enviarlo."
                 else "He creado un borrador, faltan datos por confirmar.")
-            val uri=FileProvider.getUriForFile(this,packageName+".fileprovider",file)
-            val share=Intent(Intent.ACTION_SEND).apply{
-                type="application/pdf"
-                putExtra(Intent.EXTRA_STREAM,uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if(!fromVoice){
+                val uri=FileProvider.getUriForFile(this,packageName+".fileprovider",file)
+                val share=Intent(Intent.ACTION_SEND).apply{
+                    type="application/pdf"
+                    putExtra(Intent.EXTRA_STREAM,uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(share,"Guardar o enviar presupuesto"))
             }
-            startActivity(Intent.createChooser(share,"Guardar o enviar presupuesto"))
         }catch(e:Exception){show("Error PDF: "+e.message)}
     }
     private fun stop(){
