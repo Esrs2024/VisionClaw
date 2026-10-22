@@ -79,6 +79,7 @@ fun CameraAccessScaffold(
         uiState.isStreaming ->
             StreamScreen(
                 wearablesViewModel = viewModel,
+                onRequestWearablesPermission = onRequestWearablesPermission,
                 isPhoneMode = uiState.isPhoneMode,
             )
         uiState.isRegistered ->

@@ -16,6 +16,7 @@ import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
@@ -40,6 +41,8 @@ import com.meta.wearable.dat.camera.types.VideoQuality
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.selectors.DeviceSelector
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.gemini.GeminiSessionViewModel
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.muse.MuseVoiceSession
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.phone.PhoneCameraManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.wearables.WearablesViewModel
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.webrtc.WebRTCSessionViewModel
@@ -54,6 +57,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+data class MuseUiState(
+    val active: Boolean = false,
+    val status: String = "",
+    val heard: String = "",
+    val answer: String = "",
+    val error: String? = null,
+)
 
 class StreamViewModel(
     application: Application,
@@ -83,6 +94,43 @@ class StreamViewModel(
   var geminiViewModel: GeminiSessionViewModel? = null
   var webrtcViewModel: WebRTCSessionViewModel? = null
   private var phoneCameraManager: PhoneCameraManager? = null
+  private var lastRealGlassesFrameAt = 0L
+  private val _museUiState = MutableStateFlow(MuseUiState())
+  val museUiState: StateFlow<MuseUiState> = _museUiState.asStateFlow()
+  private val museVoiceSession = MuseVoiceSession(
+      context = getApplication(),
+      scope = viewModelScope,
+      frameProvider = { _uiState.value.videoFrame to lastRealGlassesFrameAt },
+      onStatus = { message -> _museUiState.update { it.copy(status = message) } },
+      onHeard = { words -> _museUiState.update { it.copy(heard = words) } },
+      onAnswer = { text -> _museUiState.update { it.copy(answer = text, status = "Respuesta de OpenClaw recibida.") } },
+  )
+
+  fun startMuse() {
+    if (_museUiState.value.active) return
+    val currentSession = deviceSession
+    if (currentSession == null || _uiState.value.streamingMode != StreamingMode.GLASSES ||
+        _uiState.value.streamSessionState != StreamState.STREAMING) {
+      _museUiState.update { it.copy(error = "Muse necesita vídeo REAL activo de tus Ray-Ban. No se utilizará la cámara del Xiaomi.") }
+      return
+    }
+    val token = SettingsManager.openClawGatewayToken
+    if (token.isBlank() || token.startsWith("YOUR_")) {
+      _museUiState.update { it.copy(error = "Falta el Gateway Token de OpenClaw en Ajustes de VisionClaw. Puedes usar tu clave actual.") }
+      return
+    }
+    _museUiState.value = MuseUiState(active = true, status = "Conectando Muse con OpenClaw local…")
+    museVoiceSession.start(currentSession, token)
+  }
+
+  fun stopMuse() {
+    museVoiceSession.stop()
+    _museUiState.value = MuseUiState()
+  }
+
+  fun clearMuseError() {
+    _museUiState.update { it.copy(error = null) }
+  }
 
   fun startStream() {
     stopStream()
@@ -174,6 +222,8 @@ class StreamViewModel(
   }
 
   fun stopStream() {
+    stopMuse()
+    lastRealGlassesFrameAt = 0L
     // Stop foreground service
     StreamingService.stop(getApplication())
 
@@ -295,6 +345,7 @@ class StreamViewModel(
         }
 
     val bitmap = BitmapFactory.decodeByteArray(out, 0, out.size)
+    lastRealGlassesFrameAt = SystemClock.elapsedRealtime()
     _uiState.update { it.copy(videoFrame = bitmap) }
 
     // Forward to Gemini (throttled inside the VM)
