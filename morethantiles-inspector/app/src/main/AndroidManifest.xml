@@ -16,7 +16,7 @@
         android:allowBackup="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="true"
-        android:icon="@android:drawable/ic_menu_camera">
+        android:icon="@drawable/inspector_icon">
         <meta-data android:name="com.meta.wearable.mwdat.APPLICATION_ID"
             android:value="${mwdat_application_id}" />
         <meta-data android:name="com.meta.wearable.mwdat.CLIENT_TOKEN"
