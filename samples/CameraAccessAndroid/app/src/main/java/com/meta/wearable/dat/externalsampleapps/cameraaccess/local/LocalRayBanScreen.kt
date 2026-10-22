@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -104,6 +105,10 @@ private class RayBanVoiceController(
     private var activeToken = ""
     private var awaitingFollowup = false
     private var voiceReady = false
+    // Android accepts the Bluetooth routing request before the device change
+    // becomes visible. Treat the request as pending instead of reporting failure.
+    private var requestedAudioDeviceId: Int? = null
+    private var requestedAudioAtMs = 0L
 
     private val gateway = LocalOpenClawGateway(
         onStatus = { status ->
@@ -128,7 +133,6 @@ private class RayBanVoiceController(
         running = true
         activeToken = token
         if (!routeGlassesAudio()) {
-            onStatus("Audio Ray-Ban no disponible. Activa las gafas para llamadas Bluetooth.")
             running = false
             return
         }
@@ -166,24 +170,66 @@ private class RayBanVoiceController(
         gateway.connect(token)
     }
 
+    private fun hasGlassesAudioRoute(): Boolean {
+        val selected = audio.communicationDevice ?: return false
+        return selected.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            selected.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+    }
+
     private fun routeGlassesAudio(): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
-            PackageManager.PERMISSION_GRANTED) return false
-        val headset = audio.availableCommunicationDevices.firstOrNull {
+            PackageManager.PERMISSION_GRANTED) {
+            onStatus("Falta permiso Bluetooth. Actívalo en Ajustes > Apps > MoreThanTiles Gafas.")
+            return false
+        }
+        val bluetoothDevices = audio.availableCommunicationDevices.filter {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                 it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
-        } ?: return false
+        }
+        if (bluetoothDevices.isEmpty()) {
+            onStatus("El Xiaomi no ve las Ray-Ban para llamadas. En Bluetooth, activa Llamadas telefónicas.")
+            return false
+        }
+        val headset = bluetoothDevices.firstOrNull {
+            it.productName.toString().contains("ray-ban", ignoreCase = true) ||
+                it.productName.toString().contains("meta", ignoreCase = true)
+        } ?: bluetoothDevices.first()
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
-        if (audio.communicationDevice?.id != headset.id && !audio.setCommunicationDevice(headset)) return false
-        return audio.communicationDevice?.id == headset.id
+        if (audio.communicationDevice?.id == headset.id) return true
+        val now = SystemClock.elapsedRealtime()
+        if (requestedAudioDeviceId == headset.id && now - requestedAudioAtMs < 2500L) {
+            // A successful setCommunicationDevice request is asynchronous.
+            return true
+        }
+        val accepted = try {
+            audio.setCommunicationDevice(headset)
+        } catch (e: Exception) {
+            false
+        }
+        if (accepted) {
+            requestedAudioDeviceId = headset.id
+            requestedAudioAtMs = now
+            onStatus("Activando micrófono Bluetooth de las Ray-Ban…")
+        } else {
+            onStatus("Android rechazó el audio de llamadas. Comprueba Bluetooth > Ray-Ban > Llamadas.")
+        }
+        return accepted
     }
 
     private fun startRecognition() {
         if (!running || !gateway.isReady() || speaking || listening ||
             gateway.isWaitingForAgent()) return
         if (!routeGlassesAudio()) {
-            onStatus("Se ha perdido el micrófono de las Ray-Ban.")
             main.postDelayed({ if (running) startRecognition() }, 2000)
+            return
+        }
+        // Never record using the Xiaomi microphone while the Ray-Ban call
+        // route is still negotiating. The audio switch is asynchronous.
+        if (!hasGlassesAudioRoute()) {
+            if (SystemClock.elapsedRealtime() - requestedAudioAtMs > 9000L) {
+                onStatus("El audio Ray-Ban no se ha activado. Comprueba Bluetooth > Llamadas.")
+            }
+            main.postDelayed({ if (running) startRecognition() }, 400)
             return
         }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
@@ -282,6 +328,8 @@ private class RayBanVoiceController(
         textToSpeech?.shutdown()
         textToSpeech = null
         gateway.disconnect()
+        requestedAudioDeviceId = null
+        requestedAudioAtMs = 0L
         audio.clearCommunicationDevice()
         audio.mode = AudioManager.MODE_NORMAL
     }
