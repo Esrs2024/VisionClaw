@@ -24,6 +24,7 @@ class Inspection(private val ctx: Context) {
     private val dir = File(ctx.filesDir, "inspections/" + dateCode).apply { mkdirs() }
     var client = ""
     var address = ""
+    var vatRate: Double? = null
     val works = mutableListOf<WorkItem>()
     val notes = mutableListOf<String>()
     var photos = 0
@@ -54,6 +55,10 @@ class Inspection(private val ctx: Context) {
         }
         if (json.has("client")) client = json.optString("client").trim()
         if (json.has("address")) address = json.optString("address").trim()
+        if (json.has("vatRate") && !json.isNull("vatRate")) {
+            val proposed = json.optDouble("vatRate", Double.NaN)
+            if (!proposed.isNaN() && proposed in 0.0..100.0) vatRate = proposed
+        }
         if (json.has("works")) {
             val arr = json.optJSONArray("works") ?: JSONArray()
             works.clear()
@@ -73,6 +78,7 @@ class Inspection(private val ctx: Context) {
     }
 
     fun readyForOfficial(): Boolean = client.isNotBlank() && address.isNotBlank() &&
+        vatRate != null && signatureAllowed && signatureFile().exists() &&
         works.isNotEmpty() && works.all { it.quantity != null && it.price != null }
 
     fun saveSignature(bytes: ByteArray) {
@@ -86,6 +92,7 @@ class Inspection(private val ctx: Context) {
         val json = JSONObject()
             .put("created", dateCode).put("client", client).put("address", address)
             .put("photos", photos).put("notes", JSONArray(notes))
+            .put("vatRate", vatRate ?: JSONObject.NULL)
         val rows = JSONArray()
         works.forEach {
             rows.put(JSONObject().put("description", it.description).put("unit", it.unit)
@@ -158,7 +165,13 @@ class Inspection(private val ctx: Context) {
         if (works.isEmpty()) { incomplete = true; draw("[Nog geen werkposten bevestigd]") }
         y += 12f
         draw("Totaal bekende arbeidskosten: EUR " + String.format(Locale.GERMANY, "%.2f", total), 13f, true)
-        draw("BTW: niet berekend; tarief en toepasselijkheid nog te bevestigen.")
+        val vat = vatRate?.let { total * it / 100.0 }
+        if (vat == null) draw("BTW: tarief en toepasselijkheid nog te bevestigen.")
+        else {
+            draw("BTW (" + String.format(Locale.GERMANY, "%.1f", vatRate) + "%): EUR " +
+                String.format(Locale.GERMANY, "%.2f", vat))
+            draw("Totaal inclusief BTW: EUR " + String.format(Locale.GERMANY, "%.2f", total + vat), 13f, true)
+        }
         if (incomplete || !official) draw("LET OP: Concept. Ontbrekende hoeveelheden of tarieven moeten worden bevestigd.")
         y += 14f
         draw("Voorwaarden: Alleen arbeidsloon, tenzij schriftelijk anders overeengekomen.")
