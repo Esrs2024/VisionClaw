@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.local.LocalRayBanScreen
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.livekit.LiveKitSessionViewModel
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.CaptureSource
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
@@ -67,11 +68,26 @@ fun CameraAccessScaffold(
   val captureSource by SettingsManager.captureSourceFlow.collectAsStateWithLifecycle()
   val liveKitViewModel: LiveKitSessionViewModel = composeViewModel()
   val snackbarHostState = remember { SnackbarHostState() }
-  // Builds ship without a gateway token (it is per-person identity), so an
-  // install with none configured -- or one whose account is still pending
-  // approval -- sees only the sign-in gate. The flow also drops a revoked
-  // account back here mid-session. Re-checked when Settings closes because
-  // the token can be edited or reset there.
+  // Local Xiaomi/Termux mode does not require the unrelated research
+  // gateway sign-in. Register Meta glasses using the real DAT SDK and then
+  // use the local OpenClaw operator on 127.0.0.1.
+  LaunchedEffect(Unit) { viewModel.startMonitoring() }
+  var localPermissionAttempted by remember { mutableStateOf(false) }
+  LaunchedEffect(uiState.isRegistered, uiState.hasActiveDevice) {
+      if (uiState.isRegistered && uiState.hasActiveDevice && !uiState.isStreaming &&
+          !localPermissionAttempted) {
+          localPermissionAttempted = true
+          viewModel.navigateToStreaming(onRequestWearablesPermission, quietIfUnavailable = true)
+      }
+      if (!uiState.hasActiveDevice) localPermissionAttempted = false
+  }
+  Surface(modifier = modifier.fillMaxSize()) {
+      if (uiState.isRegistered) LocalRayBanScreen()
+      else HomeScreen(viewModel = viewModel)
+  }
+  // All cloud-auth UI below is intentionally bypassed in the local edition.
+  return
+
   val unlocked by SettingsManager.unlockedFlow.collectAsStateWithLifecycle()
   LaunchedEffect(uiState.isSettingsVisible) {
     if (!uiState.isSettingsVisible) SettingsManager.refreshUnlocked()
