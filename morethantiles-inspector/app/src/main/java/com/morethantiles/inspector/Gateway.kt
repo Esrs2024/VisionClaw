@@ -86,6 +86,7 @@ class Gateway(private val state: (String)->Unit, private val answer: (String)->U
         val prompt="Inspección profesional MoreThanTiles con imágenes REALES de Ray-Ban. "+
             "No inventes medidas, precio, cliente, IVA ni firma. Haz solo una pregunta a la vez. "+
             "Devuelve EXCLUSIVAMENTE un JSON completo con say en español, client, address y "+
+            "vatRate numérico (0, 9, 21 etc) o null cuando no esté confirmado, y "+
             "works lista COMPLETA de objetos con description en neerlandés, unit, quantity "+
             "numérico o null y price numérico o null. "+
             "Cliente conocido: "+inspection.client+"; dirección: "+inspection.address+
