@@ -22,8 +22,8 @@ android {
     applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
     minSdk = 31
     targetSdk = 34
-    versionCode = 4
-    versionName = "1.3-real-glasses"
+    versionCode = 5
+    versionName = "1.4-muse-real-glasses"
     ndk { abiFilters += listOf("arm64-v8a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -66,6 +66,7 @@ dependencies {
   implementation(libs.kotlinx.collections.immutable)
   implementation(libs.mwdat.core)
   implementation(libs.mwdat.camera)
+  implementation("com.meta.wearable:mwdat-speech:1.0.1")
   // VisionClaw additions
   implementation(libs.okhttp)
   implementation(libs.webrtc)
