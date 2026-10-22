@@ -19,10 +19,12 @@ android {
   buildFeatures { buildConfig = true }
 
   defaultConfig {
-    applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
+    // Install alongside earlier VisionClaw/MoreThanTiles builds signed with a different key.
+    // No uninstall or data deletion needed for the existing application.
+    applicationId = "com.morethantiles.rayban.visionclaw"
     minSdk = 31
     targetSdk = 34
-    versionCode = 1
+    versionCode = 2
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
