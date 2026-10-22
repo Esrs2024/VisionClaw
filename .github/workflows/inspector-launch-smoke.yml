@@ -1,25 +1,37 @@
-name: Inspector launch test (emulator)
+name: Inspector launch test (current APK)
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/inspector-launch-smoke.yml']
+    paths:
+      - 'morethantiles-inspector/**'
+      - '.github/workflows/inspector-launch-smoke.yml'
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
   launch:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
-      - name: Download last Inspector V2 installer
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
-          name: MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22
-          run-id: 39766444549
-          github-token: ${{ github.token }}
-          path: inspector-apk
-      - name: Open actual APK in Android emulator and capture crash
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Build the CURRENT Inspector code, not an old artifact
+        working-directory: morethantiles-inspector
+        run: bash ./gradlew :app:assembleDebug --no-daemon --console=plain
+      - name: Verify the CURRENT APK contains the intended launcher
+        run: |
+          set -eu
+          APK=morethantiles-inspector/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep "launchable-activity: name='com.morethantiles.inspector.MainActivity'"
+          sha256sum "$APK"
+      - name: Install and actually open the CURRENT APK, fail on crash
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -29,14 +41,27 @@ jobs:
           disable-animations: true
           script: |
             set -eu
-            adb install -r inspector-apk/MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk
+            adb install -r morethantiles-inspector/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
             adb shell am start -W -n com.morethantiles.inspector.vision/com.morethantiles.inspector.MainActivity
-            sleep 8
-            if ! adb shell pidof com.morethantiles.inspector.vision ; then
-              echo "App exited unexpectedly; startup exceptions:"
-              adb logcat -d -v time -s AndroidRuntime:E
+            sleep 10
+            adb logcat -d -v time -s AndroidRuntime:E > launch-androidruntime.log
+            if ! adb shell pidof com.morethantiles.inspector.vision; then
+              echo "CURRENT APK CRASHED ON LAUNCH. See AndroidRuntime log:"
+              cat launch-androidruntime.log
               exit 1
             fi
-            echo "App process still running after 8 seconds."
-            adb logcat -d -v time -s AndroidRuntime:E
+            if grep -Eq 'FATAL EXCEPTION|Process: com.morethantiles.inspector.vision' launch-androidruntime.log; then
+              echo "CURRENT APK reports a fatal startup exception:"
+              cat launch-androidruntime.log
+              exit 1
+            fi
+            echo "CURRENT Inspector APK opened and process stayed running for 10s."
+      - name: Upload launch diagnostics (no tokens)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: INSPECTOR_CURRENT_APK_LAUNCH_LOG
+          path: launch-androidruntime.log
+          if-no-files-found: ignore
+          retention-days: 3
