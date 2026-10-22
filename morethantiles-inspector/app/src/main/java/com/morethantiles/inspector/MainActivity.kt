@@ -34,6 +34,7 @@ import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.selectors.AutoDeviceSelector
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
+import com.meta.wearable.dat.core.types.RegistrationState
 import com.meta.wearable.dat.core.session.DeviceSession
 import com.meta.wearable.dat.core.session.DeviceSessionState
 import com.meta.wearable.dat.camera.Camera
@@ -86,7 +87,6 @@ class MainActivity : ComponentActivity() {
     private var cameraLive = false
     @Volatile private var lastFrameMillis = 0L
     private var museQuestionPending = false
-    private var lastPhotoMillis = 0L
 
     private val bluetoothPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -132,7 +132,10 @@ class MainActivity : ComponentActivity() {
                             show("Meta no dio permiso de voz. Puedes inspeccionar con la cámara.")
                             useVoice = false
                             beginSession()
-                        } else show("No hay permiso de cámara de las Ray-Ban.")
+                        } else {
+                            running = false
+                            show("No hay permiso de cámara de las Ray-Ban.")
+                        }
                     } else when (requested) {
                         Permission.CAMERA -> verifyMicrophone()
                         Permission.MICROPHONE -> { useVoice = true; beginSession() }
@@ -140,6 +143,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }.onFailure { error, _ ->
                     pendingPermission = null
+                    running = false
                     show("Permiso Meta: ${error.description}")
                 }
             }
@@ -223,11 +227,8 @@ class MainActivity : ComponentActivity() {
                 android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(SecureToken(this@MainActivity).read())
         }
-        button("VINCULAR RAY-BAN EN META AI") {
-            runCatching { Wearables.startRegistration(this) }.onFailure {
-                show("No se pudo iniciar el registro de Meta: ${it.message}")
-            }
-        }
+        button("COMPROBAR CONEXIÓN REAL DE LAS GAFAS") { diagnoseMeta() }
+        button("VINCULAR RAY-BAN EN META AI") { registerOnlyIfNeeded() }
         button("COMENZAR INSPECCIÓN CON GAFAS") { startInspection() }
         button("GUARDAR FOTO REAL") { snapshot() }
         button("MUSE: ¿QUÉ ESTOY VIENDO?") { askMuse("Muse, ¿qué estoy viendo?") }
@@ -256,13 +257,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Reports SDK registration and real device discovery without changing their state. */
+    private fun diagnoseMeta() {
+        val result = runCatching {
+            val reg = Wearables.registrationState.value
+            val dev = Wearables.isDevMode
+            val count = Wearables.devices.value.size
+            val bt = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+            "REGISTRO: $reg | MODO DESARROLLADOR: ${if (dev) "SÍ" else "NO"} | " +
+                "GAFAS DETECTADAS: $count | BLUETOOTH: ${if (bt) "PERMITIDO" else "SIN PERMISO"}"
+        }.getOrElse { "No puedo leer SDK Meta: ${it.javaClass.simpleName}: ${it.message}" }
+        show(result)
+        Log.i("MTTInspector", "DAT diagnosis: $result")
+    }
+
+    /** Meta DAT 1.0.1: calling register twice may disable Developer Mode. */
+    private fun registerOnlyIfNeeded() {
+        val reg = runCatching { Wearables.registrationState.value }.getOrElse {
+            show("No puedo leer el registro Meta: ${it.message}")
+            return
+        }
+        if (reg == RegistrationState.REGISTERED) {
+            show("Ya está vinculada la aplicación. No se vuelve a registrar. Pulsa COMPROBAR CONEXIÓN.")
+            return
+        }
+        runCatching { Wearables.startRegistration(this) }.onFailure {
+            show("No se pudo iniciar el registro de Meta: ${it.message}")
+        }
+    }
+
     private fun startInspection() {
-        if (running) { show("Inspección ya iniciada."); return }
+        if (running && session != null) {
+            show("Inspección ya iniciada. Consultando cámara.")
+            return
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
             != PackageManager.PERMISSION_GRANTED) {
             bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
             return
         }
+        val ready = runCatching {
+            when {
+                Wearables.registrationState.value != RegistrationState.REGISTERED -> {
+                    show("Meta aún no ha registrado la aplicación. Vincúlala una sola vez.")
+                    false
+                }
+                !Wearables.isDevMode -> {
+                    show("El SDK Meta dice MODO DESARROLLADOR INACTIVO. Fuerza el cierre de Inspector y ábrela de nuevo; no pulses VINCULAR si figura registrada.")
+                    false
+                }
+                Wearables.devices.value.isEmpty() -> {
+                    show("Registrada, pero no detecta gafas. Despiértalas y comprueba su conexión en Meta AI.")
+                    false
+                }
+                else -> true
+            }
+        }.getOrElse {
+            show("Error comprobando gafas: ${it.javaClass.simpleName}: ${it.message}")
+            false
+        }
+        if (!ready) return
         running = true
         client.text?.toString()?.takeIf { it.isNotBlank() }?.let { inspect.client = it }
         address.text?.toString()?.takeIf { it.isNotBlank() }?.let { inspect.address = it }
@@ -283,8 +338,14 @@ class MainActivity : ComponentActivity() {
                         if (permission == PermissionStatus.Granted) verifyMicrophone()
                         else requestMeta(Permission.CAMERA)
                     }
-                    .onFailure { error, _ -> show("Meta cámara: ${error.description}") }
-            } catch (t: Throwable) { show("Error al consultar cámara Meta: ${t.message}") }
+                    .onFailure { error, _ ->
+                        running = false
+                        show("Meta cámara: ${error.description}")
+                    }
+            } catch (t: Throwable) {
+                running = false
+                show("Error al consultar cámara Meta: ${t.message}")
+            }
         }
     }
 
@@ -314,12 +375,16 @@ class MainActivity : ComponentActivity() {
     private fun requestMeta(permission: Permission) {
         val launcher = permissionLauncher
         if (launcher == null) {
+            running = false
             show("Meta no está disponible. Revisa el modo desarrollador en Meta AI.")
             return
         }
         pendingPermission = permission
         runCatching { launcher.launch(permission) }
-            .onFailure { show("No se pudo solicitar permiso Meta: ${it.message}") }
+            .onFailure {
+                running = false
+                show("No se pudo solicitar permiso Meta: ${it.message}")
+            }
     }
 
     private fun beginSession() {
@@ -333,20 +398,31 @@ class MainActivity : ComponentActivity() {
                             if (state == DeviceSessionState.STARTED) attachCapabilities(connected)
                             if (state == DeviceSessionState.STOPPED) {
                                 cameraLive = false
+                                lastJpeg = null
+                                running = false
+                                cameraStarted = false
+                                speechStarted = false
+                                session = null
                                 show("Sesión de las gafas finalizada.")
                                 updateInfo()
                             }
                         }
                     }
                     errorJob = lifecycleScope.launch {
-                        connected.errors.collect { error -> show("Sesión Meta: ${error.description}") }
+                        connected.errors.collect { error ->
+                            show("Sesión Meta: ${error.description}. Pulsa COMPROBAR CONEXIÓN para ver el estado.")
+                        }
                     }
                     show("Conectando con las Ray-Ban...")
                     connected.start()
                 },
-                onFailure = { error, _ -> show("Ray-Ban: ${error.description}") }
+                onFailure = { error, _ ->
+                    running = false
+                    show("Ray-Ban: ${error.description}")
+                }
             )
         } catch (t: Throwable) {
+            running = false
             show("Error de conexión con las gafas: ${t.javaClass.simpleName}: ${t.message}")
             Log.e("MTTInspector", "start session error", t)
         }
@@ -375,10 +451,7 @@ class MainActivity : ComponentActivity() {
                                     val jpeg = i420ToJpeg(bytes, w, h)
                                     lastJpeg = jpeg
                                     cameraLive = true
-                                    if (now - lastPhotoMillis > 19000) {
-                                        lastPhotoMillis = now
-                                        inspect.savePhoto(jpeg)
-                                    }
+                                    // Do not save camera frames without an explicit photo command.
                                     withContext(Dispatchers.Main) {
                                         preview.setImageBitmap(
                                             BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
@@ -596,6 +669,7 @@ class MainActivity : ComponentActivity() {
         running = false
         museQuestionPending = false
         cameraLive = false
+        lastJpeg = null
         speechStarted = false
         cameraStarted = false
         stateJob?.cancel()
