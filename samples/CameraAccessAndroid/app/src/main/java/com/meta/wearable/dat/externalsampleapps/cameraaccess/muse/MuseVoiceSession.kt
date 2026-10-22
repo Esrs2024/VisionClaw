@@ -89,15 +89,20 @@ class MuseVoiceSession(
                             if (transcript != null && transcript.isFinal && 
                                 transcript.text.isNotBlank() && running && !speaking) {
                                 val words = transcript.text.trim()
-                                onHeard(words)
-                                sendQuestion(words)
+                                val spoken = words.lowercase(Locale.forLanguageTag("es-ES"))
+                                // Explicit wake word: no unwanted photo uploads or API usage.
+                                if (spoken.startsWith("muse") || spoken.contains("oye muse") ||
+                                    spoken.contains("hola muse")) {
+                                    onHeard(words)
+                                    sendQuestion(words)
+                                }
                             }
                         }
                     }
                     instance.start().onFailure { error, _ ->
                         onStatus("Micrófono Ray-Ban Meta: " + error.description)
                     }
-                    onStatus("Muse listo. Pregunta en voz alta mirando con las gafas.")
+                    onStatus("Micrófono Ray-Ban preparado. Di 'Muse' y tu pregunta. OpenClaw debe tener el modelo Muse configurado.")
                 },
                 onFailure = { error, _ ->
                     onStatus("No se ha podido iniciar la voz de las Ray-Ban: " + error.description)
