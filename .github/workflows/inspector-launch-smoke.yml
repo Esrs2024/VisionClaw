@@ -1,0 +1,42 @@
+name: Inspector launch test (emulator)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inspector-launch-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download last Inspector V2 installer
+        uses: actions/download-artifact@v4
+        with:
+          name: MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22
+          run-id: 39766444549
+          github-token: ${{ github.token }}
+          path: inspector-apk
+      - name: Open actual APK in Android emulator and capture crash
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            set -eu
+            adb install -r inspector-apk/MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk
+            adb logcat -c
+            adb shell am start -W -n com.morethantiles.inspector.vision/com.morethantiles.inspector.MainActivity
+            sleep 8
+            if ! adb shell pidof com.morethantiles.inspector.vision ; then
+              echo "App exited unexpectedly; startup exceptions:"
+              adb logcat -d -v time -s AndroidRuntime:E
+              exit 1
+            fi
+            echo "App process still running after 8 seconds."
+            adb logcat -d -v time -s AndroidRuntime:E
