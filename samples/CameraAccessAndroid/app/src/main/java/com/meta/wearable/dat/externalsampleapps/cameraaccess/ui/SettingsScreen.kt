@@ -87,7 +87,7 @@ fun SettingsScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Ajustes de Gemini") },
+            title = { Text("Ajustes de VisionClaw") },
             actions = { TextButton(onClick = { save(); onBack() }) { Text("Guardar") } },
             navigationIcon = {
                 IconButton(onClick = {
@@ -108,7 +108,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // Gemini section
-            SectionHeader("Conexión directa con Google AI Studio")
+            SectionHeader("Google AI Studio (configuración anterior)")
             Text("Pega tu API key de Gemini. No necesitas iniciar sesión con Google ni un código de acceso. La clave se guarda cifrada en este móvil.")
             MonoTextField(
                 value = geminiAPIKey,
@@ -124,7 +124,7 @@ fun SettingsScreen(
                 label = "Modelo Gemini Live",
                 placeholder = "gemini-3.8-live",
             )
-            Text("OpenClaw es opcional y requiere un servidor aparte. Déjalo vacío para conversar por voz y cámara con Gemini.")
+            Text("El botón AI de VisionClaw ahora utiliza Muse a través del OpenClaw local de tu Xiaomi. Conserva el Gateway Token que ya tienes. Gemini permanece disponible en la configuración anterior.")
             SectionHeader("System Prompt")
             OutlinedTextField(
                 value = systemPrompt,
@@ -135,7 +135,7 @@ fun SettingsScreen(
             )
 
             // OpenClaw section
-            SectionHeader("OpenClaw")
+            SectionHeader("OpenClaw local para Muse AI")
             MonoTextField(
                 value = openClawHost,
                 onValueChange = { openClawHost = it },
