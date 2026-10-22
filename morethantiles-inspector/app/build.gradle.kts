@@ -9,8 +9,8 @@ android {
         applicationId = "com.morethantiles.inspector.vision"
         minSdk = 31
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0-inspeccion"
+        versionCode = 2
+        versionName = "1.1-arranque"
     }
     signingConfigs {
         create("inspectorStable") {
