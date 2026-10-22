@@ -1,0 +1,54 @@
+name: MoreThanTiles Inspector Android
+on:
+  workflow_dispatch:
+  push:
+    branches: [morethantiles-inspector-nuevo-20261022, main]
+    paths:
+      - 'morethantiles-inspector/**'
+      - '.github/workflows/morethantiles-inspector.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'morethantiles-inspector/**'
+      - '.github/workflows/morethantiles-inspector.yml'
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: morethantiles-inspector
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Ensure Meta SDK access
+        env:
+          META_PACKAGES_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+        run: |
+          if [ -z "$META_PACKAGES_TOKEN" ]; then
+            echo "::error::META_PACKAGES_TOKEN is required for Meta Wearables DAT"
+            exit 1
+          fi
+      - name: Build independent app
+        env:
+          GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+        run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace --console=plain
+      - name: Stage installer
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk
+          cd dist
+          sha256sum MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22
+          path: morethantiles-inspector/dist/
+          retention-days: 14
