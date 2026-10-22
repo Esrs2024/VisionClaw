@@ -62,7 +62,9 @@ class Gateway(private val state: (String)->Unit, private val answer: (String)->U
                                     connected=packet.optBoolean("ok") &&
                                         packet.optJSONObject("payload")?.optString("type")=="hello-ok"
                                     status(if(connected)"OpenClaw conectado. Puedes hablar."
-                                        else "OpenClaw rechazó la conexión local.")
+                                        else "OpenClaw rechazó la conexión: " +
+                                            (packet.optJSONObject("error")?.optString("message")?.take(180)
+                                                ?: "comprueba la clave local."))
                                 }else if(id==requestId&&!packet.optBoolean("ok")){
                                     status("Orden rechazada: "+(packet.optJSONObject("error")?.optString("message")?:"error"))
                                 }
@@ -71,7 +73,7 @@ class Gateway(private val state: (String)->Unit, private val answer: (String)->U
                     }catch(_:Exception){status("Mensaje del agente no reconocido.")}
                 }
                 override fun onFailure(webSocket:WebSocket,t:Throwable,response:Response?){
-                    connected=false;status("Sin conexión con OpenClaw en Termux.")
+                    connected=false;status("Sin conexión con OpenClaw en Termux: " + (t.message ?: "sin detalles").take(130))
                 }
                 override fun onClosed(webSocket:WebSocket,code:Int,reason:String){connected=false}
             })
