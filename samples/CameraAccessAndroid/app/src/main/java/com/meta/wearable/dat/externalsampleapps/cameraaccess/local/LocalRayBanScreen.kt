@@ -288,7 +288,7 @@ private class RayBanVoiceController(
 }
 
 @Composable
-fun LocalRayBanScreen(modifier: Modifier = Modifier) {
+fun LocalRayBanScreen(startCapture: Boolean, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val store = remember { LocalTokenStore(context) }
     var token by remember { mutableStateOf(store.read()) }
@@ -303,7 +303,7 @@ fun LocalRayBanScreen(modifier: Modifier = Modifier) {
             { status = it }, { transcript = it })
     }
 
-    LaunchedEffect(Unit) { camera.startPreview() }
+    LaunchedEffect(startCapture) { if (startCapture) camera.startPreview() }
     LaunchedEffect(token) {
         if (token.isNotBlank()) voice.start(token)
     }
