@@ -1,7 +1,6 @@
 package com.morethantiles.inspector
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -13,15 +12,20 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Bundle
 import android.os.SystemClock
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.widget.*
+import android.util.Log
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -30,392 +34,537 @@ import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.selectors.AutoDeviceSelector
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
-import com.meta.wearable.dat.camera.StreamSession
-import com.meta.wearable.dat.camera.startStreamSession
+import com.meta.wearable.dat.core.session.DeviceSession
+import com.meta.wearable.dat.core.session.DeviceSessionState
+import com.meta.wearable.dat.camera.Camera
+import com.meta.wearable.dat.camera.addCamera
 import com.meta.wearable.dat.camera.types.StreamConfiguration
-import com.meta.wearable.dat.camera.types.StreamSessionState
 import com.meta.wearable.dat.camera.types.VideoQuality
-import kotlinx.coroutines.*
+import com.meta.wearable.dat.speech.Speech
+import com.meta.wearable.dat.speech.addSpeech
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
-class MainActivity : ComponentActivity(), RecognitionListener {
+/** Genuine Ray-Ban camera and on-device speech. No phone-camera or microphone substitution. */
+class MainActivity : ComponentActivity() {
     private lateinit var inspect: Inspection
-    private lateinit var bridge: Gateway
+    private lateinit var gateway: Gateway
     private lateinit var status: TextView
-    private lateinit var details: TextView
+    private lateinit var info: TextView
+    private lateinit var transcript: TextView
     private lateinit var preview: ImageView
     private lateinit var client: EditText
     private lateinit var address: EditText
     private lateinit var token: EditText
     private lateinit var signatureConsent: CheckBox
-    private lateinit var log: TextView
-    private lateinit var audio: AudioManager
-    private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var talking = false
-    private var listening = false
+    private var speaking = false
     private var running = false
-    private var headsetTrials = 0
-    private var cameraLive = false
-    private var stream: StreamSession? = null
-    private var videoJob: Job? = null
+    private var session: DeviceSession? = null
+    private var camera: Camera? = null
+    private var speech: Speech? = null
+    private var cameraStarted = false
+    private var speechStarted = false
+    private var useVoice = false
+    private var pendingPermission: Permission? = null
+    private var permissionLauncher: ActivityResultLauncher<Permission>? = null
     private var stateJob: Job? = null
-    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
-    @Volatile private var currentJpeg: ByteArray? = null
-    private var lastFrameAt = 0L
-    private var lastPhotoAt = 0L
-    private var awaitingFollowup = false
+    private var errorJob: Job? = null
+    private var videoJob: Job? = null
+    private var cameraStateJob: Job? = null
+    private var voiceJob: Job? = null
+    private var speechStateJob: Job? = null
+    @Volatile private var lastJpeg: ByteArray? = null
+    private var cameraLive = false
+    private var lastFrameMillis = 0L
+    private var lastPhotoMillis = 0L
 
-    private val androidPermission = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if(result.values.all{it}) startInspection() else show("Faltan permisos Android de cámara, voz o Bluetooth.")
+    private val bluetoothPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        if (allowed) startInspection()
+        else show("Hace falta permiso Bluetooth para comunicar con las gafas.")
     }
-    private var metaPermission: androidx.activity.result.ActivityResultLauncher<Permission>? = null
-    private val signaturePicker=registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if(uri!=null) {
-            try {
-                val bytes=contentResolver.openInputStream(uri)?.use{it.readBytes()}
-                if(bytes!=null && BitmapFactory.decodeByteArray(bytes,0,bytes.size)!=null){
+    private val signaturePicker = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null && BitmapFactory.decodeByteArray(bytes, 0, bytes.size) != null) {
                     inspect.saveSignature(bytes)
-                    signatureConsent.isChecked=false
-                    show("Firma auténtica guardada. Debes autorizar su uso en cada inspección.")
-                } else show("La firma debe ser una imagen PNG o JPG legible.")
-            }catch(e:Exception){show("No se pudo importar la firma: "+e.message)}
+                    signatureConsent.isChecked = false
+                    show("Firma auténtica guardada. Autoriza cada presupuesto por separado.")
+                } else show("La firma debe ser una imagen JPG o PNG.")
+            }.onFailure { show("No se pudo guardar la firma: ${it.message}") }
         }
     }
 
-    override fun onCreate(savedInstanceState:Bundle?){
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        inspect=Inspection(this)
-        audio=getSystemService(AUDIO_SERVICE) as AudioManager
-        bridge=Gateway({s->show(s);if(s.startsWith("OpenClaw conectado"))activateAudio()},
-            {s->onAgent(s)})
+        inspect = Inspection(this)
+        gateway = Gateway(
+            { text -> show(text) },
+            { text -> receiveAgent(text) }
+        )
         makeScreen()
+        // Registration depends on the Meta AI app. Errors must never crash this UI.
         try {
-            metaPermission = registerForActivityResult(Wearables.RequestPermissionContract()) { result ->
-                if(result.getOrDefault(PermissionStatus.Denied)==PermissionStatus.Granted) startVideo()
-                else show("Meta no autorizó la cámara de las gafas. Vincula la aplicación con las Ray-Ban.")
+            permissionLauncher = registerForActivityResult(
+                Wearables.RequestPermissionContract()
+            ) { result ->
+                result.onSuccess { granted ->
+                    val requested = pendingPermission
+                    pendingPermission = null
+                    if (granted != PermissionStatus.Granted) {
+                        if (requested == Permission.MICROPHONE) {
+                            show("Meta no dio permiso de voz. Puedes inspeccionar con la cámara.")
+                            useVoice = false
+                            beginSession()
+                        } else show("No hay permiso de cámara de las Ray-Ban.")
+                    } else when (requested) {
+                        Permission.CAMERA -> verifyMicrophone()
+                        Permission.MICROPHONE -> { useVoice = true; beginSession() }
+                        else -> show("Permiso Meta registrado.")
+                    }
+                }.onFailure { error, _ ->
+                    pendingPermission = null
+                    show("Permiso Meta: ${error.description}")
+                }
             }
-        } catch (failure: Throwable) {
-            show("Error al preparar Meta Wearables. La aplicación continúa abierta.")
+        } catch (t: Throwable) {
+            show("No se pudo preparar el permiso Meta: ${t.javaClass.simpleName}.")
+            Log.e("MTTInspector", "Meta permission registration failed", t)
         }
-        tts=TextToSpeech(this){ state ->
-            ttsReady=state==TextToSpeech.SUCCESS
-            if(ttsReady){
-                tts?.language=Locale.forLanguageTag("es-ES")
-                tts?.setAudioAttributes(AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                tts?.setOnUtteranceProgressListener(object:UtteranceProgressListener(){
-                    override fun onStart(utteranceId:String?){}
-                    override fun onDone(utteranceId:String?){ui.post{talking=false;startListening()}}
+        tts = TextToSpeech(this) { success ->
+            ttsReady = success == TextToSpeech.SUCCESS
+            if (ttsReady) {
+                tts?.language = Locale.forLanguageTag("es-ES")
+                tts?.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+                )
+                tts?.setOnUtteranceProgressListener(object: UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        runOnUiThread { speaking = false; if (running) resumeSpeech() }
+                    }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId:String?){ui.post{talking=false;startListening()}}
+                    override fun onError(utteranceId: String?) {
+                        runOnUiThread { speaking = false; if (running) resumeSpeech() }
+                    }
                 })
-            } else show("La voz de Android no está disponible.")
+            }
         }
     }
 
-    private fun makeScreen(){
-        val scroll=ScrollView(this)
-        val box=LinearLayout(this).apply{
-            orientation=LinearLayout.VERTICAL
-            setPadding(35,45,35,55)
-            setBackgroundColor(android.graphics.Color.rgb(249,248,245))
+    private fun makeScreen() {
+        val scroll = ScrollView(this)
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(34, 34, 34, 46)
+            setBackgroundColor(android.graphics.Color.rgb(250, 249, 246))
         }
-        fun label(text:String,size:Float=16f):TextView{
-            val v=TextView(this).apply{
-                this.text=text; textSize=size
-                setTextColor(android.graphics.Color.rgb(32,29,23))
-                setPadding(0,12,0,10)
+        fun label(value: String, size: Float = 15f): TextView {
+            val view = TextView(this).apply {
+                text = value
+                textSize = size
+                setTextColor(android.graphics.Color.rgb(38, 32, 23))
+                setPadding(0, 12, 0, 10)
             }
-            box.addView(v);return v
+            column.addView(view)
+            return view
         }
-        fun edit(hint:String):EditText{
-            return EditText(this).apply{this.hint=hint;box.addView(this)}
+        fun button(value: String, action: () -> Unit) {
+            column.addView(Button(this).apply { text = value; setOnClickListener { action() } })
         }
-        fun button(text:String, action:()->Unit){
-            box.addView(Button(this).apply{this.text=text;setOnClickListener{action()}})
+        fun field(hintText: String): EditText = EditText(this).also {
+            it.hint = hintText
+            column.addView(it)
         }
-        label("MORETHANTILES  |  INSPECTOR",23f)
-        label("Inspección con cámara real de las Ray-Ban + OpenClaw local")
-        status=label("Sin iniciar. No hay confirmación de cámara ni micrófono.",14f)
-        details=label("0 fotografías; 0 partidas registradas",14f)
-        preview=ImageView(this).apply{
-            adjustViewBounds=true
-            layoutParams=LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,330)
+        label("MORETHANTILES | INSPECTOR", 22f)
+        label("Cámara + voz reales de las Ray-Ban Meta • OpenClaw local")
+        status = label("Sin conectar. No hay imágenes ni voz confirmadas.", 14f)
+        info = label("Fotografías: 0 | Partidas: 0", 14f)
+        preview = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 360)
             setBackgroundColor(android.graphics.Color.DKGRAY)
-            scaleType=ImageView.ScaleType.FIT_CENTER
+            scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        box.addView(preview)
-        client=edit("Nombre del cliente (también puedes dictarlo)")
-        address=edit("Dirección de la obra (también puedes dictarla)")
-        token=edit("Clave de OpenClaw local (una sola vez)").apply{
-            inputType=android.text.InputType.TYPE_CLASS_TEXT or
+        column.addView(preview)
+        client = field("Nombre del cliente")
+        address = field("Dirección de obra")
+        token = field("Token local de OpenClaw").apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(SecureToken(this@MainActivity).read())
         }
-        button("Vincular estas Ray-Ban a la aplicación"){
-            try{Wearables.initialize(applicationContext);Wearables.startRegistration(this)}
-            catch(e:Exception){show("Error de vinculación Meta: "+e.message)}
-        }
-        button("COMENZAR INSPECCIÓN COMPLETA"){startInspection()}
-        button("CAPTURAR FOTO DE LAS GAFAS"){snapshot()}
-        button("GENERAR PDF DE PRESUPUESTO"){exportPdf()}
-        button("Elegir imagen de firma auténtica"){signaturePicker.launch("image/*")}
-        signatureConsent=CheckBox(this).apply{
-            text="Autorizo mi firma auténtica en el PDF de esta inspección"
-            isChecked=false;box.addView(this)
-        }
-        log=label("Conversación e inspección:",13f)
-        button("Terminar inspección"){stop()}
-        scroll.addView(box);setContentView(scroll)
-    }
-
-    private fun show(text:String){
-        runOnUiThread{status.text=text}
-    }
-    private fun refresh(){
-        runOnUiThread{
-            details.text="Cámara: "+(if(cameraLive)"transmitiendo fotogramas" else "sin imagen")+
-                " | Fotos: "+inspect.photos+" | Partidas: "+inspect.works.size
-        }
-    }
-    private fun startInspection(){
-        if(running){show("Inspección ya iniciada.");return}
-        val needed=listOf(Manifest.permission.CAMERA,Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.BLUETOOTH_CONNECT)
-        val missing=needed.filter{ContextCompat.checkSelfPermission(this,it)!=PackageManager.PERMISSION_GRANTED}
-        if(missing.isNotEmpty()){androidPermission.launch(missing.toTypedArray());return}
-        running=true
-        if(token.text.toString().isNotBlank()){
-            SecureToken(this).write(token.text.toString().trim())
-            bridge.connect(token.text.toString().trim(),inspect.dateCode)
-        }else show("La cámara puede funcionar, pero falta la clave local para el agente.")
-        try{
-            Wearables.initialize(applicationContext)
-            lifecycleScope.launch{
-                try{
-                    val check=Wearables.checkPermissionStatus(Permission.CAMERA)
-                    if(check.getOrNull()==PermissionStatus.Granted)startVideo()
-                    else metaPermission?.launch(Permission.CAMERA) ?: show("Meta Wearables no disponible.")
-                }catch(e:Exception){show("Permiso Meta: "+e.message)}
+        button("VINCULAR RAY-BAN EN META AI") {
+            runCatching { Wearables.startRegistration(this) }.onFailure {
+                show("No se pudo iniciar el registro de Meta: ${it.message}")
             }
-        }catch(e:Exception){show("No se pudo iniciar Meta Wearables: "+e.message)}
-    }
-
-    private fun startVideo(){
-        if(stream!=null)return
-        try{
-            val s=Wearables.startStreamSession(applicationContext,AutoDeviceSelector(),
-                StreamConfiguration(videoQuality=VideoQuality.HIGH,15))
-            stream=s
-            show("Conectando cámara REAL Ray-Ban…")
-            stateJob=lifecycleScope.launch {
-                s.state.collect {state->
-                    if(state!=StreamSessionState.STREAMING)cameraLive=false
-                    if(state==StreamSessionState.STREAMING)show("Cámara iniciada: esperando fotograma REAL…")
-                    else show("Estado de cámara Ray-Ban: "+state.toString())
-                    refresh()
-                }
-            }
-            videoJob=lifecycleScope.launch(Dispatchers.Default){
-                s.videoStream.collect {frame->
-                    val now=SystemClock.elapsedRealtime()
-                    if(now-lastFrameAt<1500L)return@collect
-                    lastFrameAt=now
-                    try{
-                        val w=frame.width;val h=frame.height
-                        if(w<=0||h<=0||w%2!=0||h%2!=0)return@collect
-                        val buf=frame.buffer.duplicate()
-                        val data=ByteArray(buf.remaining())
-                        buf.get(data)
-                        val jpeg=toJpeg(data,w,h)
-                        currentJpeg=jpeg
-                        if(!cameraLive){cameraLive=true;show("Cámara comprobada: fotogramas reales recibidos.")}
-                        if(now-lastPhotoAt>7000L){
-                            lastPhotoAt=now
-                            inspect.savePhoto(jpeg)
-                            refresh()
-                        }
-                        withContext(Dispatchers.Main){
-                            preview.setImageBitmap(BitmapFactory.decodeByteArray(jpeg,0,jpeg.size))
-                        }
-                    }catch(e:Exception){show("No se pudo procesar un fotograma: "+e.message)}
-                }
-            }
-        }catch(e:Exception){show("No se pudo abrir cámara Ray-Ban: "+e.message)}
-    }
-
-    private fun toJpeg(data:ByteArray,w:Int,h:Int):ByteArray{
-        val y=w*h
-        val chroma=y/4
-        if(data.size<y+chroma*2)throw IllegalArgumentException("fotograma incompleto")
-        val nv21=ByteArray(y+chroma*2)
-        System.arraycopy(data,0,nv21,0,y)
-        for(i in 0 until chroma){
-            nv21[y+2*i]=data[y+chroma+i]
-            nv21[y+2*i+1]=data[y+i]
         }
-        val out=ByteArrayOutputStream()
-        YuvImage(nv21,ImageFormat.NV21,w,h,null)
-            .compressToJpeg(Rect(0,0,w,h),60,out)
-        return out.toByteArray()
-    }
-    private fun snapshot(){
-        val bytes=currentJpeg
-        if(!cameraLive||bytes==null){show("No hay fotograma real: no se guardará una imagen falsa.");return}
-        inspect.savePhoto(bytes);refresh();speak("Fotografía guardada.")
+        button("COMENZAR INSPECCIÓN CON GAFAS") { startInspection() }
+        button("GUARDAR FOTO REAL") { snapshot() }
+        button("GENERAR PDF DEL PRESUPUESTO") { exportPdf() }
+        button("Añadir imagen de mi firma") { signaturePicker.launch("image/*") }
+        signatureConsent = CheckBox(this).apply {
+            text = "Autorizo mi firma para ESTE presupuesto"
+            isChecked = false
+            column.addView(this)
+        }
+        transcript = label("Conversación: sin iniciar", 14f)
+        button("FINALIZAR INSPECCIÓN") { stopInspection() }
+        scroll.addView(column)
+        setContentView(scroll)
     }
 
-    private fun activateAudio(){
-        if(!running)return
-        headsetTrials=0
-        tryRoute()
+    private fun show(message: String) {
+        runOnUiThread { if (::status.isInitialized) status.text = message }
     }
-    private fun tryRoute(){
-        if(!running)return
-        if(ContextCompat.checkSelfPermission(this,Manifest.permission.BLUETOOTH_CONNECT)!=
-            PackageManager.PERMISSION_GRANTED){show("Falta permiso Bluetooth.");return}
-        val glasses=audio.availableCommunicationDevices.firstOrNull{
-            (it.type==AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-             it.type==AudioDeviceInfo.TYPE_BLE_HEADSET) &&
-            (it.productName.toString().contains("Ray",true) ||
-             it.productName.toString().contains("Meta",true))
-        } ?: audio.availableCommunicationDevices.firstOrNull{
-            it.type==AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-            it.type==AudioDeviceInfo.TYPE_BLE_HEADSET
+    private fun updateInfo() {
+        runOnUiThread {
+            if (::info.isInitialized) info.text =
+                "Cámara: ${if (cameraLive) "fotogramas reales" else "sin imagen"}" +
+                    " | Fotos: ${inspect.photos} | Partidas: ${inspect.works.size}" +
+                    " | Voz Meta: ${if (speechStarted) "activa" else "no disponible"}"
         }
-        if(glasses==null){
-            show("Android no expone una ruta de llamadas Bluetooth para las Ray-Ban.")
+    }
+
+    private fun startInspection() {
+        if (running) { show("Inspección ya iniciada."); return }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+            != PackageManager.PERMISSION_GRANTED) {
+            bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
             return
         }
-        audio.mode=AudioManager.MODE_IN_COMMUNICATION
-        audio.setCommunicationDevice(glasses)
-        if(audio.communicationDevice?.id==glasses.id){
-            show("Ruta de llamadas Bluetooth activa. Escuchando instrucciones…")
-            startListening()
-        }else if(headsetTrials++<14){
-            ui.postDelayed({tryRoute()},500)
-        }else show("El audio de llamadas no se activó; no usaré el micrófono del teléfono.")
+        running = true
+        client.text?.toString()?.takeIf { it.isNotBlank() }?.let { inspect.client = it }
+        address.text?.toString()?.takeIf { it.isNotBlank() }?.let { inspect.address = it }
+        val secret = token.text.toString().trim()
+        if (secret.isNotBlank()) {
+            runCatching { SecureToken(this).write(secret) }
+                .onFailure { show("No se pudo guardar la clave local.") }
+            gateway.connect(secret, inspect.dateCode)
+        } else show("Falta el token de OpenClaw; la inspección visual puede iniciarse.")
+        verifyCamera()
     }
 
-    private fun startListening(){
-        if(!running||talking||listening||!bridge.connected)return
-        val dev=audio.communicationDevice
-        if(dev==null||(dev.type!=AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
-                dev.type!=AudioDeviceInfo.TYPE_BLE_HEADSET)){
-            show("Micrófono Ray-Ban no disponible; reconocimiento detenido.");return
+    private fun verifyCamera() {
+        lifecycleScope.launch {
+            try {
+                Wearables.checkPermissionStatus(Permission.CAMERA)
+                    .onSuccess { permission ->
+                        if (permission == PermissionStatus.Granted) verifyMicrophone()
+                        else requestMeta(Permission.CAMERA)
+                    }
+                    .onFailure { error, _ -> show("Meta cámara: ${error.description}") }
+            } catch (t: Throwable) { show("Error al consultar cámara Meta: ${t.message}") }
         }
-        if(!SpeechRecognizer.isRecognitionAvailable(this)){
-            show("No hay servicio de reconocimiento de voz Android.");return
-        }
-        try{
-            if(recognizer==null){
-                recognizer=SpeechRecognizer.createSpeechRecognizer(this)
-                recognizer?.setRecognitionListener(this)
+    }
+
+    private fun verifyMicrophone() {
+        lifecycleScope.launch {
+            try {
+                Wearables.checkPermissionStatus(Permission.MICROPHONE)
+                    .onSuccess { permission ->
+                        if (permission == PermissionStatus.Granted) {
+                            useVoice = true
+                            beginSession()
+                        } else requestMeta(Permission.MICROPHONE)
+                    }
+                    .onFailure { error, _ ->
+                        useVoice = false
+                        show("Micrófono Meta: ${error.description}. Iniciando solo cámara.")
+                        beginSession()
+                    }
+            } catch (t: Throwable) {
+                useVoice = false
+                show("Voz Meta no disponible. Iniciando cámara.")
+                beginSession()
             }
-            val intent=Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE,"es-ES")
-                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS,false)
-            listening=true
-            recognizer?.startListening(intent)
-            show("Escuchando instrucciones desde las Ray-Ban…")
-        }catch(e:Exception){listening=false;show("Error de voz: "+e.message)}
-    }
-    private fun speak(s:String){
-        if(!ttsReady){show(s);ui.postDelayed({startListening()},800);return}
-        talking=true
-        recognizer?.cancel()
-        listening=false
-        tts?.speak(s.take(750),TextToSpeech.QUEUE_FLUSH,null,"mtt-reply")
-    }
-    private fun onAgent(raw:String){
-        val speech=inspect.receive(raw)
-        client.setText(inspect.client)
-        address.setText(inspect.address)
-        log.text="Agente: "+speech
-        refresh();speak(speech)
-    }
-    override fun onResults(results:Bundle?){
-        listening=false
-        val words=results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()?.trim().orEmpty()
-        if(words.isBlank()){rearm();return}
-        val lower=words.lowercase(Locale.forLanguageTag("es-ES"))
-        if(!awaitingFollowup && listOf("oye","mira","morethantiles","inspección",
-                "presupuesto","foto","guardar","pdf","firma").none{lower.contains(it)}){
-            rearm();return
-        }
-        awaitingFollowup=true
-        inspect.client=client.text.toString().ifBlank{inspect.client}
-        inspect.address=address.text.toString().ifBlank{inspect.address}
-        inspect.addObservation(words,currentJpeg)
-        log.text="Tú: "+words
-        refresh()
-        if(lower.contains("generar")&&lower.contains("pdf") ||
-           lower.contains("exportar")&&lower.contains("presupuesto")){
-            exportPdf(fromVoice=true)
-        }else if(lower.contains("hacer foto")||lower.contains("guardar foto")){
-            snapshot()
-        }else{
-            val jpeg=if(cameraLive)currentJpeg else null
-            bridge.send(words,jpeg,inspect)
         }
     }
-    private fun rearm(){ui.postDelayed({startListening()},600)}
-    override fun onError(error:Int){listening=false
-        if(running)ui.postDelayed({startListening()},1200)}
-    override fun onReadyForSpeech(params:Bundle?){}
-    override fun onBeginningOfSpeech(){}
-    override fun onRmsChanged(rmsdB:Float){}
-    override fun onBufferReceived(buffer:ByteArray?){}
-    override fun onEndOfSpeech(){}
-    override fun onPartialResults(partialResults:Bundle?){}
-    override fun onEvent(eventType:Int,params:Bundle?){}
 
-    private fun exportPdf(fromVoice:Boolean=false){
-        inspect.client=client.text.toString().ifBlank{inspect.client}
-        inspect.address=address.text.toString().ifBlank{inspect.address}
-        inspect.signatureAllowed=signatureConsent.isChecked
-        try{
-            val file=inspect.makePdf()
-            show("PDF generado: "+file.name+
-                if(inspect.readyForOfficial())" (partidas completas)" else " (BORRADOR)")
-            speak(if(inspect.readyForOfficial())"Presupuesto generado. Revisa antes de enviarlo."
-                else "He creado un borrador, faltan datos por confirmar.")
-            if(!fromVoice){
-                val uri=FileProvider.getUriForFile(this,packageName+".fileprovider",file)
-                val share=Intent(Intent.ACTION_SEND).apply{
-                    type="application/pdf"
-                    putExtra(Intent.EXTRA_STREAM,uri)
+    private fun requestMeta(permission: Permission) {
+        val launcher = permissionLauncher
+        if (launcher == null) {
+            show("Meta no está disponible. Revisa el modo desarrollador en Meta AI.")
+            return
+        }
+        pendingPermission = permission
+        runCatching { launcher.launch(permission) }
+            .onFailure { show("No se pudo solicitar permiso Meta: ${it.message}") }
+    }
+
+    private fun beginSession() {
+        if (!running || session != null) return
+        try {
+            Wearables.createSession(AutoDeviceSelector()).fold(
+                onSuccess = { connected ->
+                    session = connected
+                    stateJob = lifecycleScope.launch {
+                        connected.state.collect { state ->
+                            if (state == DeviceSessionState.STARTED) attachCapabilities(connected)
+                            if (state == DeviceSessionState.STOPPED) {
+                                cameraLive = false
+                                show("Sesión de las gafas finalizada.")
+                                updateInfo()
+                            }
+                        }
+                    }
+                    errorJob = lifecycleScope.launch {
+                        connected.errors.collect { error -> show("Sesión Meta: ${error.description}") }
+                    }
+                    show("Conectando con las Ray-Ban...")
+                    connected.start()
+                },
+                onFailure = { error, _ -> show("Ray-Ban: ${error.description}") }
+            )
+        } catch (t: Throwable) {
+            show("Error de conexión con las gafas: ${t.javaClass.simpleName}: ${t.message}")
+            Log.e("MTTInspector", "start session error", t)
+        }
+    }
+
+    private fun attachCapabilities(connected: DeviceSession) {
+        if (!cameraStarted) {
+            cameraStarted = true
+            try {
+                connected.addCamera(
+                    StreamConfiguration(videoQuality = VideoQuality.MEDIUM, frameRate = 15)
+                ).fold(
+                    onSuccess = { acquired ->
+                        camera = acquired
+                        videoJob = lifecycleScope.launch(Dispatchers.Default) {
+                            acquired.stream.videoStream.collect { frame ->
+                                val now = SystemClock.elapsedRealtime()
+                                if (now - lastFrameMillis < 1700) return@collect
+                                lastFrameMillis = now
+                                try {
+                                    val w = frame.width; val h = frame.height
+                                    if (w <= 0 || h <= 0 || w % 2 != 0 || h % 2 != 0) return@collect
+                                    val buffer = frame.buffer.duplicate()
+                                    val bytes = ByteArray(buffer.remaining())
+                                    buffer.get(bytes)
+                                    val jpeg = i420ToJpeg(bytes, w, h)
+                                    lastJpeg = jpeg
+                                    cameraLive = true
+                                    if (now - lastPhotoMillis > 19000) {
+                                        lastPhotoMillis = now
+                                        inspect.savePhoto(jpeg)
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        preview.setImageBitmap(
+                                            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+                                        )
+                                        updateInfo()
+                                    }
+                                } catch (e: Exception) {
+                                    show("Problema al recibir imagen Ray-Ban: ${e.message}")
+                                }
+                            }
+                        }
+                        cameraStateJob = lifecycleScope.launch {
+                            acquired.stream.state.collect { state ->
+                                show("Cámara Ray-Ban: ${state}")
+                            }
+                        }
+                        acquired.stream.start()
+                            .onFailure { error, _ -> show("Cámara Meta: ${error.description}") }
+                    },
+                    onFailure = { error, _ ->
+                        cameraStarted = false
+                        show("No se pudo abrir la cámara: ${error.description}")
+                    }
+                )
+            } catch (t: Throwable) {
+                cameraStarted = false
+                show("Error de cámara real Meta: ${t.message}")
+            }
+        }
+        if (useVoice && !speechStarted) {
+            speechStarted = true
+            try {
+                connected.addSpeech().fold(
+                    onSuccess = { activeSpeech ->
+                        speech = activeSpeech
+                        voiceJob = lifecycleScope.launch {
+                            activeSpeech.transcriptions.collect { result ->
+                                if (result != null && result.isFinal && result.text.isNotBlank()) {
+                                    withContext(Dispatchers.Main) { onSpeech(result.text) }
+                                }
+                            }
+                        }
+                        activeSpeech.start()
+                            .onFailure { error, _ ->
+                                speechStarted = false
+                                show("Reconocimiento de voz Meta: ${error.description}")
+                            }
+                        updateInfo()
+                    },
+                    onFailure = { error, _ ->
+                        speechStarted = false
+                        show("Voz Ray-Ban no iniciada: ${error.description}")
+                        updateInfo()
+                    }
+                )
+            } catch (t: Throwable) {
+                speechStarted = false
+                show("Error de voz Meta: ${t.message}")
+            }
+        }
+    }
+
+    private fun i420ToJpeg(input: ByteArray, width: Int, height: Int): ByteArray {
+        val area = width * height
+        val chroma = area / 4
+        require(input.size >= area + chroma * 2) { "fotograma YUV incompleto" }
+        val nv21 = ByteArray(area + 2 * chroma)
+        System.arraycopy(input, 0, nv21, 0, area)
+        for (i in 0 until chroma) {
+            nv21[area + i * 2] = input[area + chroma + i]
+            nv21[area + i * 2 + 1] = input[area + i]
+        }
+        return ByteArrayOutputStream().use { out ->
+            YuvImage(nv21, ImageFormat.NV21, width, height, null)
+                .compressToJpeg(Rect(0, 0, width, height), 65, out)
+            out.toByteArray()
+        }
+    }
+
+    private fun snapshot() {
+        val real = lastJpeg
+        if (!cameraLive || real == null) {
+            show("Sin imagen de Ray-Ban. No se guardarán fotografías simuladas.")
+            return
+        }
+        inspect.savePhoto(real)
+        updateInfo()
+        say("Fotografía real guardada.")
+    }
+
+    private fun onSpeech(words: String) {
+        if (!running || speaking) return
+        val command = words.trim()
+        if (command.isBlank()) return
+        transcript.text = "Tú: $command"
+        inspect.client = client.text.toString().ifBlank { inspect.client }
+        inspect.address = address.text.toString().ifBlank { inspect.address }
+        val photo = if (cameraLive) lastJpeg else null
+        inspect.addObservation(command, photo)
+        updateInfo()
+        val lower = command.lowercase(Locale.forLanguageTag("es-ES"))
+        when {
+            lower.contains("guardar foto") || lower.contains("hacer foto") -> snapshot()
+            lower.contains("generar presupuesto") || lower.contains("generar pdf") ||
+                lower.contains("exportar presupuesto") -> exportPdf(fromVoice = true)
+            else -> gateway.send(command, photo, inspect)
+        }
+    }
+
+    private fun receiveAgent(message: String) {
+        runOnUiThread {
+            val response = inspect.receive(message)
+            client.setText(inspect.client)
+            address.setText(inspect.address)
+            transcript.text = "Agente: $response"
+            updateInfo()
+            say(response)
+        }
+    }
+
+    private fun say(message: String) {
+        if (!running || message.isBlank()) return
+        val sound = getSystemService(AUDIO_SERVICE) as AudioManager
+        val hasGlassesOutput = try {
+            sound.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+                val name = it.productName?.toString().orEmpty()
+                (name.contains("Meta", true) || name.contains("Ray", true) ||
+                  name.startsWith("RB ", true)) &&
+                    (it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                     it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                     it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+            }
+        } catch (_: Exception) { false }
+        if (!hasGlassesOutput) {
+            show("Respuesta en pantalla. Android no confirma salida de audio Ray-Ban.")
+            return
+        }
+        if (!ttsReady) {
+            show("Sí hay respuesta, pero el lector de voz de Android no está listo.")
+            return
+        }
+        speaking = true
+        try { speech?.stop() } catch (_: Exception) {}
+        tts?.speak(message.take(700), TextToSpeech.QUEUE_FLUSH, null, "morethantiles-reply")
+    }
+
+    private fun resumeSpeech() {
+        if (!running || !useVoice) return
+        try {
+            speech?.start()?.onFailure { error, _ -> show("No se reanudó voz: ${error.description}") }
+        } catch (t: Throwable) { show("No se pudo reanudar voz Meta: ${t.message}") }
+    }
+
+    private fun exportPdf(fromVoice: Boolean = false) {
+        inspect.client = client.text.toString().ifBlank { inspect.client }
+        inspect.address = address.text.toString().ifBlank { inspect.address }
+        inspect.signatureAllowed = signatureConsent.isChecked
+        try {
+            val file = inspect.makePdf()
+            show("PDF ${if (inspect.readyForOfficial()) "completo" else "borrador"} guardado: ${file.name}")
+            if (fromVoice) {
+                say("Presupuesto guardado en el teléfono. Revisa los datos antes de enviarlo.")
+            } else {
+                val uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", file)
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/pdf"
+                    putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                startActivity(Intent.createChooser(share,"Guardar o enviar presupuesto"))
+                startActivity(Intent.createChooser(share, "Guardar o compartir presupuesto"))
             }
-        }catch(e:Exception){show("Error PDF: "+e.message)}
+        } catch (e: Exception) { show("Error al crear PDF: ${e.message}") }
     }
-    private fun stop(){
-        running=false;cameraLive=false;listening=false
-        videoJob?.cancel();stateJob?.cancel()
-        videoJob=null;stateJob=null
-        stream?.close();stream=null
-        recognizer?.cancel()
-        bridge.disconnect()
-        audio.clearCommunicationDevice();audio.mode=AudioManager.MODE_NORMAL
-        inspect.persist();refresh()
-        show("Inspección guardada en el teléfono.")
+
+    private fun stopInspection() {
+        running = false
+        cameraLive = false
+        speechStarted = false
+        cameraStarted = false
+        stateJob?.cancel()
+        errorJob?.cancel()
+        videoJob?.cancel()
+        voiceJob?.cancel()
+        cameraStateJob?.cancel()
+        speechStateJob?.cancel()
+        try { speech?.stop() } catch (_: Exception) {}
+        try { camera?.stop() } catch (_: Exception) {}
+        try { session?.stop() } catch (_: Exception) {}
+        speech = null
+        camera = null
+        session = null
+        gateway.disconnect()
+        runCatching { inspect.persist() }
+        updateInfo()
+        show("Inspección guardada. Fotos y presupuesto permanecen en el móvil.")
     }
-    override fun onDestroy(){
-        stop()
-        recognizer?.destroy();recognizer=null
-        tts?.shutdown();tts=null
+
+    override fun onDestroy() {
+        stopInspection()
+        tts?.shutdown()
+        tts = null
         super.onDestroy()
     }
 }
