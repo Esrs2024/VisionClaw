@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -20,13 +21,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -35,6 +39,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.meta.wearable.dat.camera.types.StreamState
+import com.meta.wearable.dat.core.Wearables
+import com.meta.wearable.dat.core.types.Permission
+import com.meta.wearable.dat.core.types.PermissionStatus
+import kotlinx.coroutines.launch
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.R
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.gemini.GeminiSessionViewModel
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.stream.StreamViewModel
@@ -45,6 +53,7 @@ import com.meta.wearable.dat.externalsampleapps.cameraaccess.webrtc.WebRTCSessio
 @Composable
 fun StreamScreen(
     wearablesViewModel: WearablesViewModel,
+    onRequestWearablesPermission: suspend (Permission) -> PermissionStatus,
     isPhoneMode: Boolean = false,
     modifier: Modifier = Modifier,
     streamViewModel: StreamViewModel =
@@ -61,6 +70,8 @@ fun StreamScreen(
     val streamUiState by streamViewModel.uiState.collectAsStateWithLifecycle()
     val geminiUiState by geminiViewModel.uiState.collectAsStateWithLifecycle()
     val webrtcUiState by webrtcViewModel.uiState.collectAsStateWithLifecycle()
+    val museUiState by streamViewModel.museUiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
 
@@ -90,6 +101,7 @@ fun StreamScreen(
         onDispose {
             geminiViewModel.stopSession()
             webrtcViewModel.stopSession()
+            streamViewModel.stopMuse()
             streamViewModel.stopStream()
         }
     }
@@ -105,6 +117,12 @@ fun StreamScreen(
         webrtcUiState.errorMessage?.let { msg ->
             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             webrtcViewModel.clearError()
+        }
+    }
+    LaunchedEffect(museUiState.error) {
+        museUiState.error?.let { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            streamViewModel.clearMuseError()
         }
     }
 
@@ -129,8 +147,25 @@ fun StreamScreen(
         Box(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             // Top overlays (below status bar)
             Column(modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(top = 8.dp)) {
-                // Gemini overlay
-                if (geminiUiState.isGeminiActive) {
+                // Preserve the existing full-screen camera and top overlay.
+                // The same AI button now connects to Muse through local OpenClaw.
+                if (museUiState.active) {
+                    Text(
+                        text = "Muse · " + museUiState.status,
+                        color = Color.White,
+                        maxLines = 2,
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)).padding(8.dp),
+                    )
+                    if (museUiState.answer.isNotBlank()) {
+                        Text(
+                            text = museUiState.answer.take(180),
+                            color = Color.White,
+                            maxLines = 3,
+                            modifier = Modifier.padding(top = 4.dp)
+                                .background(Color.Black.copy(alpha = 0.6f)).padding(8.dp),
+                        )
+                    }
+                } else if (geminiUiState.isGeminiActive) {
                     GeminiOverlay(uiState = geminiUiState)
                 }
 
@@ -144,6 +179,7 @@ fun StreamScreen(
             // Controls at bottom
             ControlsRow(
                 onStopStream = {
+                    streamViewModel.stopMuse()
                     if (geminiUiState.isGeminiActive) geminiViewModel.stopSession()
                     if (webrtcUiState.isActive) webrtcViewModel.stopSession()
                     streamViewModel.stopStream()
@@ -151,13 +187,28 @@ fun StreamScreen(
                 },
                 onCapturePhoto = { streamViewModel.capturePhoto() },
                 onToggleAI = {
-                    if (geminiUiState.isGeminiActive) {
-                        geminiViewModel.stopSession()
+                    if (museUiState.active) {
+                        streamViewModel.stopMuse()
+                    } else if (isPhoneMode) {
+                        Toast.makeText(context, "Muse necesita la cámara real de las gafas.", Toast.LENGTH_LONG).show()
                     } else {
-                        geminiViewModel.startSession()
+                        scope.launch {
+                            try {
+                                val permission = Wearables.checkPermissionStatus(Permission.MICROPHONE).getOrNull()
+                                val granted = permission == PermissionStatus.Granted ||
+                                    onRequestWearablesPermission(Permission.MICROPHONE) == PermissionStatus.Granted
+                                if (granted) streamViewModel.startMuse()
+                                else Toast.makeText(context,
+                                    "Meta no dio permiso al micrófono de las Ray-Ban.", Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context,
+                                    "No se pudo autorizar la voz Meta: " + (e.message ?: "error"),
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 },
-                isAIActive = geminiUiState.isGeminiActive,
+                isAIActive = museUiState.active,
                 onToggleLive = {
                     if (webrtcUiState.isActive) {
                         webrtcViewModel.stopSession()
