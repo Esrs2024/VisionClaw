@@ -5,6 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import java.util.concurrent.atomic.AtomicBoolean
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -92,6 +96,7 @@ private class LocalTokenStore(private val context: Context) {
 private class RayBanVoiceController(
     private val context: Context,
     private val captureFrame: ((Bitmap?) -> Unit) -> Unit,
+    private val onRealFrame: (Bitmap) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onTranscript: (String) -> Unit,
 ) : RecognitionListener {
@@ -172,8 +177,10 @@ private class RayBanVoiceController(
 
     private fun hasGlassesAudioRoute(): Boolean {
         val selected = audio.communicationDevice ?: return false
-        return selected.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-            selected.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+        // Do not silently listen to a different Bluetooth headset or the phone.
+        return selected.id == requestedAudioDeviceId &&
+            (selected.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+             selected.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
     }
 
     private fun routeGlassesAudio(): Boolean {
@@ -193,9 +200,16 @@ private class RayBanVoiceController(
         val headset = bluetoothDevices.firstOrNull {
             it.productName.toString().contains("ray-ban", ignoreCase = true) ||
                 it.productName.toString().contains("meta", ignoreCase = true)
-        } ?: bluetoothDevices.first()
+        }
+        if (headset == null) {
+            onStatus("Hay Bluetooth, pero no se identifican las Ray-Ban. No usaré otro micrófono.")
+            return false
+        }
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
-        if (audio.communicationDevice?.id == headset.id) return true
+        if (audio.communicationDevice?.id == headset.id) {
+            requestedAudioDeviceId = headset.id
+            return true
+        }
         val now = SystemClock.elapsedRealtime()
         if (requestedAudioDeviceId == headset.id && now - requestedAudioAtMs < 2500L) {
             // A successful setCommunicationDevice request is asynchronous.
@@ -265,6 +279,81 @@ private class RayBanVoiceController(
         }
     }
 
+    /**
+     * Always capture a fresh REAL frame from the Meta DAT stream for a visual
+     * question. A timeout or a missing frame must NEVER be forwarded as if
+     * Muse had actually seen the user's surroundings.
+     */
+    private fun requestRealFrame(words: String) {
+        if (!running || !gateway.isReady()) {
+            onStatus("Primero conecta OpenClaw local para preguntar a Muse.")
+            return
+        }
+        if (gateway.isWaitingForAgent()) {
+            onStatus("Muse está contestando la pregunta anterior.")
+            return
+        }
+        onStatus("Capturando imagen REAL de las Ray-Ban…")
+        val completed = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (completed.compareAndSet(false, true) && running) {
+                onStatus("No llega vídeo de las Ray-Ban. Comprueba conexión y permiso de cámara Meta.")
+                say("No recibo imagen de tus gafas. No voy a fingir que veo.")
+            }
+        }
+        main.postDelayed(timeout, 6000L)
+        try {
+            captureFrame { bitmap ->
+                main.post {
+                    if (!completed.compareAndSet(false, true)) return@post
+                    main.removeCallbacks(timeout)
+                    if (!running) return@post
+                    if (bitmap == null) {
+                        onStatus("Cámara Ray-Ban sin vídeo real. No se ha enviado ninguna imagen.")
+                        say("La cámara de las gafas no está enviando imágenes.")
+                        return@post
+                    }
+                    try {
+                        val imageBase64 = ByteArrayOutputStream().use { bytes ->
+                            val scale = 960f / maxOf(bitmap.width, bitmap.height)
+                            val scaled = if (scale < 1f) Bitmap.createScaledBitmap(
+                                bitmap,
+                                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                                true
+                            ) else bitmap
+                            try {
+                                check(scaled.compress(Bitmap.CompressFormat.JPEG, 65, bytes)) {
+                                    "No se pudo convertir el fotograma a JPEG"
+                                }
+                            } finally {
+                                if (scaled !== bitmap) scaled.recycle()
+                            }
+                            Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)
+                        }
+                        onRealFrame(bitmap)
+                        onStatus("Imagen REAL recibida: ${bitmap.width}×${bitmap.height}. Enviando a Muse…")
+                        gateway.sendVoiceCommand(words, imageBase64)
+                    } catch (_: Exception) {
+                        onStatus("No se pudo preparar la imagen real. No se envió la pregunta.")
+                        say("No pude preparar la imagen de tus gafas.")
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            if (completed.compareAndSet(false, true)) {
+                main.removeCallbacks(timeout)
+                onStatus("Error al acceder a la cámara Ray-Ban.")
+                say("No puedo acceder a la cámara de tus gafas.")
+            }
+        }
+    }
+
+    /** Button-initiated live verification, without any mock or phone-camera fallback. */
+    fun testMuseVision() {
+        requestRealFrame("Muse, describe brevemente en español lo que aparece en la imagen real de mis gafas.")
+    }
+
     override fun onResults(results: Bundle?) {
         listening = false
         val heard = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -273,31 +362,18 @@ private class RayBanVoiceController(
             main.postDelayed({ if (running) startRecognition() }, 500)
             return
         }
-        // Hands-free wake phrase, with a natural follow-up after a question.
         val lower = heard.lowercase(Locale.forLanguageTag("es-ES"))
-        if (!awaitingFollowup && !listOf("oye", "morethantiles", "openclaw",
-                "presupuesto", "factura").any { lower.contains(it) }) {
+        if (!awaitingFollowup && !listOf(
+                "muse", "oye", "morethantiles", "openclaw", "presupuesto",
+                "factura", "qué veo", "que veo", "qué ves", "que ves",
+                "mira", "qué estás viendo"
+            ).any { lower.contains(it) }) {
             main.postDelayed({ if (running) startRecognition() }, 350)
             return
         }
         awaitingFollowup = false
         onTranscript("Tú: $heard")
-        onStatus("Recibiendo imagen REAL de las Ray-Ban…")
-        captureFrame { bitmap ->
-            // The DAT callback may be off the UI thread.
-            val b64 = bitmap?.let {
-                ByteArrayOutputStream().use { bytes ->
-                    val scale = 960f / maxOf(it.width, it.height)
-                    val image = if (scale < 1f) Bitmap.createScaledBitmap(
-                        it, (it.width * scale).toInt(), (it.height * scale).toInt(), true
-                    ) else it
-                    image.compress(Bitmap.CompressFormat.JPEG, 65, bytes)
-                    if (image !== it) image.recycle()
-                    Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)
-                }
-            }
-            main.post { if (running) gateway.sendVoiceCommand(heard, b64) }
-        }
+        requestRealFrame(heard)
     }
 
     override fun onError(error: Int) {
@@ -344,11 +420,12 @@ fun LocalRayBanScreen(startCapture: Boolean, modifier: Modifier = Modifier) {
     var input by remember { mutableStateOf(token) }
     var status by remember { mutableStateOf("Preparando conexión local…") }
     var transcript by remember { mutableStateOf("") }
+    var lastRealFrame by remember { mutableStateOf<Bitmap?>(null) }
     val camera: LiveKitSessionViewModel = viewModel()
     val cameraState by camera.uiState.collectAsStateWithLifecycle()
     val voice = remember(camera) {
         RayBanVoiceController(context, { callback -> camera.captureGlassesFrame(callback) },
-            { status = it }, { transcript = it })
+            { lastRealFrame = it }, { status = it }, { transcript = it })
     }
 
     LaunchedEffect(startCapture) { if (startCapture) camera.startPreview() }
@@ -373,6 +450,19 @@ fun LocalRayBanScreen(startCapture: Boolean, modifier: Modifier = Modifier) {
                  else "Conectando cámara Ray-Ban…")
             Text(status, style = MaterialTheme.typography.bodyLarge)
             if (transcript.isNotBlank()) Text(transcript)
+            Button(
+                onClick = { voice.testMuseVision() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Probar Muse: ¿qué ven mis gafas?") }
+            lastRealFrame?.let { bitmap ->
+                Text("Prueba visual: imagen capturada por las Ray-Ban, no por el Xiaomi.")
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Último fotograma real recibido de las Ray-Ban Meta",
+                    modifier = Modifier.fillMaxWidth().height(180.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            }
             Spacer(Modifier.height(8.dp))
             if (editing) {
                 Text("Conexión a TU OpenClaw de Termux. No se utiliza Google ni VisionClaw Cloud.")
