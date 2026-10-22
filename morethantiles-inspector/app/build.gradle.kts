@@ -9,8 +9,10 @@ android {
         applicationId = "com.morethantiles.inspector.vision"
         minSdk = 31
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1-arranque"
+        versionCode = 3
+        versionName = "2.0-meta-dat"
+        manifestPlaceholders["mwdat_application_id"] = "0"
+        manifestPlaceholders["mwdat_client_token"] = "0"
     }
     signingConfigs {
         create("inspectorStable") {
@@ -34,8 +36,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
-    implementation("com.meta.wearable:mwdat-core:0.4.0")
-    implementation("com.meta.wearable:mwdat-camera:0.4.0")
+    implementation("com.meta.wearable:mwdat-core:1.0.1")
+    implementation("com.meta.wearable:mwdat-camera:1.0.1")
+    implementation("com.meta.wearable:mwdat-speech:1.0.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

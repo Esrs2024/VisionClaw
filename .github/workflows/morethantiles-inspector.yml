@@ -2,7 +2,7 @@ name: MoreThanTiles Inspector Android
 on:
   workflow_dispatch:
   push:
-    branches: [morethantiles-inspector-nuevo-20261022, main]
+    branches: [main]
     paths:
       - 'morethantiles-inspector/**'
       - '.github/workflows/morethantiles-inspector.yml'
@@ -29,26 +29,21 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
-      - name: Ensure Meta SDK access
-        env:
-          META_PACKAGES_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
-        run: |
-          if [ -z "$META_PACKAGES_TOKEN" ]; then
-            echo "::error::META_PACKAGES_TOKEN is required for Meta Wearables DAT"
-            exit 1
-          fi
-      - name: Build independent app
-        env:
-          GITHUB_TOKEN: ${{ secrets.META_PACKAGES_TOKEN }}
+      - name: Build Inspector with official Meta DAT SDK from Maven Central
         run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace --console=plain
+      - name: Verify launchable activity in manifest
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep "launchable-activity: name='com.morethantiles.inspector.MainActivity'"
       - name: Stage installer
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/MORETHANTILES_INSPECTOR_DAT_V3.apk
           cd dist
-          sha256sum MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22.apk > SHA256SUMS.txt
+          sha256sum MORETHANTILES_INSPECTOR_DAT_V3.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: MORETHANTILES_INSPECTOR_NUEVA_APP_2026-10-22
+          name: MORETHANTILES_INSPECTOR_DAT_V3
           path: morethantiles-inspector/dist/
           retention-days: 14
