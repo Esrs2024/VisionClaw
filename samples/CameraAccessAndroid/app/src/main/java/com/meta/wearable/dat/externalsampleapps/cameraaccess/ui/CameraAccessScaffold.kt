@@ -82,7 +82,7 @@ fun CameraAccessScaffold(
       if (!uiState.hasActiveDevice) localPermissionAttempted = false
   }
   Surface(modifier = modifier.fillMaxSize()) {
-      if (uiState.isRegistered) LocalRayBanScreen()
+      if (uiState.isRegistered) LocalRayBanScreen(startCapture = uiState.isStreaming)
       else HomeScreen(viewModel = viewModel)
   }
   // All cloud-auth UI below is intentionally bypassed in the local edition.
