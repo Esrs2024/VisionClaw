@@ -899,6 +899,19 @@ class LiveKitSessionViewModel(
         _uiState.update { it.copy(glassesStreaming = false) }
     }
 
+    /**
+     * Snapshot from the LIVE Ray-Ban stream, for the local OpenClaw voice
+     * agent. No phone camera fallback, no simulation and no cloud gateway.
+     */
+    fun captureGlassesFrame(onCaptured: (Bitmap?) -> Unit) {
+        if (SettingsManager.captureSource != CaptureSource.GLASSES ||
+            !_uiState.value.glassesStreaming) {
+            onCaptured(null)
+            return
+        }
+        frameGrabber.requestFrame(onCaptured)
+    }
+
     // MARK: Freeze (pin a frame for the model to refer to)
 
     // While frozen, the screen shows the pinned frame and the published video
