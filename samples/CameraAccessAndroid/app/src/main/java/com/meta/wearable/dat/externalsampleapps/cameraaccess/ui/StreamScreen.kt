@@ -156,6 +156,15 @@ fun StreamScreen(
                         maxLines = 2,
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.6f)).padding(8.dp),
                     )
+                    if (museUiState.heard.isNotBlank()) {
+                        Text(
+                            text = "TE OÍ: " + museUiState.heard.take(150),
+                            color = Color.White,
+                            maxLines = 3,
+                            modifier = Modifier.padding(top = 4.dp)
+                                .background(Color.Black.copy(alpha = 0.6f)).padding(8.dp),
+                        )
+                    }
                     if (museUiState.answer.isNotBlank()) {
                         Text(
                             text = museUiState.answer.take(180),
