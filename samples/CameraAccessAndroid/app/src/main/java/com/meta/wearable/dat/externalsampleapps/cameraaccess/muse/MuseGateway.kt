@@ -34,6 +34,22 @@ class MuseGateway(
     @Volatile private var busy = false
     private var responseId: String? = null
     private var lastReply = ""
+    private var timeoutRunnable: Runnable? = null
+    private fun clearResponseTimeout() {
+        timeoutRunnable?.let { main.removeCallbacks(it) }
+        timeoutRunnable = null
+    }
+    private fun scheduleResponseTimeout() {
+        clearResponseTimeout()
+        val timeout = Runnable {
+            if (busy) {
+                busy = false
+                error("OpenClaw no respondió en 75 segundos. Comprueba el agente en Termux.")
+            }
+        }
+        timeoutRunnable = timeout
+        main.postDelayed(timeout, 75000L)
+    }
     private val session = "agent:main:visionclaw-original-muse"
 
     private fun status(v: String) = main.post { onStatus(v) }
@@ -88,6 +104,7 @@ class MuseGateway(
                                             if (spoken.isNotBlank()) lastReply = spoken
                                         }
                                         "final" -> {
+                                            clearResponseTimeout()
                                             busy = false
                                             val spoken = extractText(p).ifBlank { lastReply }
                                             lastReply = ""
@@ -95,6 +112,7 @@ class MuseGateway(
                                             else error("OpenClaw terminó sin respuesta del modelo.")
                                         }
                                         "error" -> {
+                                            clearResponseTimeout()
                                             busy = false
                                             error("OpenClaw informó de un error de agente o modelo.")
                                         }
@@ -114,6 +132,7 @@ class MuseGateway(
                                     }
                                 }
                                 responseId -> if (!event.optBoolean("ok")) {
+                                    clearResponseTimeout()
                                     busy = false
                                     val why = event.optJSONObject("error")?.optString("message") ?: "error"
                                     error("OpenClaw rechazó la pregunta: " + why.take(160))
@@ -126,11 +145,13 @@ class MuseGateway(
                 }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     connected = false
+                    clearResponseTimeout()
                     busy = false
                     error("OpenClaw no responde en Termux (127.0.0.1:18789).")
                 }
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     connected = false
+                    clearResponseTimeout()
                     busy = false
                     status("Conexión OpenClaw cerrada.")
                 }
@@ -192,6 +213,7 @@ class MuseGateway(
             busy = false
             error("No se pudo enviar la pregunta a OpenClaw.")
         } else {
+            scheduleResponseTimeout()
             status(if (visual) "Imagen real enviada a OpenClaw. Esperando respuesta…"
                    else "Pregunta de VOZ enviada a OpenClaw, sin fotografía. Esperando respuesta…")
         }
@@ -208,6 +230,7 @@ class MuseGateway(
     }
 
     fun close() {
+        clearResponseTimeout()
         connected = false
         busy = false
         responseId = null
