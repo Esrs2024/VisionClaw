@@ -45,6 +45,8 @@ class MuseVoiceSession(
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var speaking = false
+    private var waitingForReply = false
+    private var wakeArmedUntil = 0L
 
     fun start(deviceSession: DeviceSession, gatewayToken: String) {
         if (running) return
@@ -81,8 +83,16 @@ class MuseVoiceSession(
         gateway = MuseGateway(
             onReady = { if (running) attachMetaSpeech(deviceSession) },
             onStatus = { if (running) onStatus(it) },
-            onAnswer = { if (running) { onAnswer(it); sayThroughGlasses(it) } },
-            onError = { if (running) { onStatus(it); scope.launch { resumeSpeech() } } },
+            onAnswer = { if (running) {
+                waitingForReply = false
+                onAnswer(it)
+                sayThroughGlasses(it)
+            } },
+            onError = { if (running) {
+                waitingForReply = false
+                onStatus(it)
+                scope.launch { resumeSpeech() }
+            } },
         ).also { it.connect(gatewayToken) }
     }
 
@@ -107,10 +117,21 @@ class MuseVoiceSession(
                             }
                             onHeard(words)
                             val spoken = words.lowercase(Locale.forLanguageTag("es-ES"))
-                            // Keep wake-word protection: don't silently upload private images.
-                            if (spoken.startsWith("muse") || spoken.contains("oye muse") ||
-                                spoken.contains("hola muse")) {
-                                onStatus("Reconocido: " + words.take(90) + ". Consultando…")
+                            // Recognisers may return "Muse" and the next question
+                            // in separate final utterances. Arm a short follow-up window.
+                            val now = SystemClock.elapsedRealtime()
+                            val woke = spoken.startsWith("muse") ||
+                                spoken.contains("oye muse") || spoken.contains("hola muse")
+                            val onlyWake = spoken.trim(' ', '.', ',', '!', '¡', '?', '¿') in
+                                setOf("muse", "oye muse", "hola muse")
+                            if (onlyWake) {
+                                wakeArmedUntil = now + 10000L
+                                onStatus("Muse te escuchó. Di ahora tu pregunta.")
+                                return@collect
+                            }
+                            if (woke || now < wakeArmedUntil) {
+                                wakeArmedUntil = 0L
+                                onStatus("Reconocido: " + words.take(90) + ". Enviando a OpenClaw…")
                                 sendQuestion(words)
                             } else {
                                 onStatus("Oí en las gafas: " + words.take(95) +
@@ -129,7 +150,7 @@ class MuseVoiceSession(
                                         recognitionLocale + "). Di: Muse, qué ves.")
                                 }
                                 SpeechState.STOPPED -> {
-                                    if (started && !speaking) onStatus(
+                                    if (started && !speaking && !waitingForReply) onStatus(
                                         "El reconocimiento Ray-Ban se detuvo. Apaga y enciende AI.")
                                 }
                                 else -> Unit
@@ -173,37 +194,67 @@ class MuseVoiceSession(
         }
     }
 
+    /**
+     * Ordinary voice questions need only an OpenClaw text message.
+     * Only explicit vision requests need a FRESH Meta camera frame.
+     * We never substitute a phone camera or old cached photo.
+     */
     private fun sendQuestion(question: String) {
-        val target = gateway ?: return
-        if (!target.isConnected() || target.isBusy()) return
-        val (frame, frameAt) = frameProvider()
-        val age = SystemClock.elapsedRealtime() - frameAt
-        if (frame == null || frameAt == 0L || age < 0L || age > 4000L) {
-            onStatus("Sin imagen RECIENTE de las Ray-Ban. No se envió una imagen falsa.")
+        val target = gateway ?: run {
+            onStatus("No existe conexión con OpenClaw.")
             return
         }
-        val encoded = try {
-            ByteArrayOutputStream().use { output ->
-                val scale = 960f / maxOf(frame.width, frame.height)
-                val reduced = if (scale < 1f) Bitmap.createScaledBitmap(
-                    frame,
-                    (frame.width * scale).toInt().coerceAtLeast(1),
-                    (frame.height * scale).toInt().coerceAtLeast(1),
-                    true,
-                ) else frame
-                try {
-                    check(reduced.compress(Bitmap.CompressFormat.JPEG, 65, output))
-                } finally {
-                    if (reduced !== frame) reduced.recycle()
-                }
-                output.toByteArray()
+        if (!target.isConnected()) {
+            onStatus("OpenClaw no está conectado. Comprueba el Gateway en Termux.")
+            return
+        }
+        if (target.isBusy()) {
+            onStatus("OpenClaw sigue respondiendo. Escucha la respuesta anterior.")
+            return
+        }
+        val normalized = question.lowercase(Locale.forLanguageTag("es-ES"))
+        val needsVision = listOf(
+            "qué veo", "que veo", "qué ves", "que ves",
+            "qué estoy viendo", "que estoy viendo", "qué estás viendo",
+            "que estas viendo", "qué hay delante", "que hay delante",
+            "qué tengo delante", "que tengo delante", "mira lo que",
+            "describe lo que ves", "qué hay enfrente", "que hay enfrente"
+        ).any { normalized.contains(it) }
+        val sent = if (!needsVision) {
+            target.askText(question)
+        } else {
+            val (frame, frameAt) = frameProvider()
+            val age = SystemClock.elapsedRealtime() - frameAt
+            if (frame == null || frameAt == 0L || age < 0L || age > 4000L) {
+                onStatus("La voz funciona, pero NO hay imagen reciente Ray-Ban. " +
+                    "No se ha enviado una foto inventada.")
+                return
             }
-        } catch (_: Exception) {
-            onStatus("No se pudo convertir el fotograma REAL de las gafas.")
-            return
+            val encoded = try {
+                ByteArrayOutputStream().use { output ->
+                    val scale = 960f / maxOf(frame.width, frame.height)
+                    val reduced = if (scale < 1f) Bitmap.createScaledBitmap(
+                        frame,
+                        (frame.width * scale).toInt().coerceAtLeast(1),
+                        (frame.height * scale).toInt().coerceAtLeast(1),
+                        true,
+                    ) else frame
+                    try {
+                        check(reduced.compress(Bitmap.CompressFormat.JPEG, 65, output))
+                    } finally {
+                        if (reduced !== frame) reduced.recycle()
+                    }
+                    output.toByteArray()
+                }
+            } catch (_: Exception) {
+                onStatus("No se pudo convertir el fotograma REAL de las gafas.")
+                return
+            }
+            target.askWithRealGlassesImage(question, encoded)
         }
-        if (target.askWithRealGlassesImage(question, encoded)) {
-            // Stop transcribing until the answer is spoken, avoiding self-echo.
+        if (sent) {
+            waitingForReply = true
+            // Temporarily suspend speech input to avoid recognizing the assistant's own answer.
             try { speech?.stop() } catch (_: Exception) {}
         }
     }
@@ -241,6 +292,7 @@ class MuseVoiceSession(
             return
         }
         speaking = true
+        onStatus("OpenClaw respondió. Intentando hablar por las Ray-Ban…")
         val result = tts?.speak(text.take(750), TextToSpeech.QUEUE_FLUSH, null, "visionclaw-muse")
         if (result != TextToSpeech.SUCCESS) {
             speaking = false
@@ -264,6 +316,8 @@ class MuseVoiceSession(
         // with "A capability of this type is already active on the session".
         running = false
         speaking = false
+        waitingForReply = false
+        wakeArmedUntil = 0L
         transcriptJob?.cancel()
         speechStateJob?.cancel()
         speechErrorJob?.cancel()
