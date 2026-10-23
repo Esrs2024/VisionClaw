@@ -116,7 +116,7 @@ class MuseGateway(
                                 responseId -> if (!event.optBoolean("ok")) {
                                     busy = false
                                     val why = event.optJSONObject("error")?.optString("message") ?: "error"
-                                    error("El agente no aceptó la imagen: " + why.take(160))
+                                    error("OpenClaw rechazó la pregunta: " + why.take(160))
                                 }
                             }
                         }
@@ -139,50 +139,62 @@ class MuseGateway(
     }
 
     /**
-     * Only an explicitly spoken question triggers a single real Ray-Ban photo.
-     * Muse Spark must be selected separately in OpenClaw; a prompt cannot
-     * secretly change the provider.
+     * Text questions MUST NOT need a camera frame. Only user-requested vision
+     * questions carry a fresh image from Meta glasses.
      */
+    fun askText(question: String): Boolean = sendToAgent(question, null)
+
     fun askWithRealGlassesImage(question: String, jpeg: ByteArray): Boolean {
-        if (!connected) {
-            error("OpenClaw no está conectado.")
-            return false
-        }
-        if (busy) {
-            status("Esperando la respuesta anterior…")
-            return false
-        }
         if (jpeg.isEmpty()) {
             error("La cámara de las gafas no ha enviado una imagen válida.")
             return false
         }
-        val instruction = "Estás respondiendo en español a una pregunta hecha con unas Ray-Ban Meta Gen 2. " +
-            "La fotografía adjunta es un fotograma real tomado ahora con las gafas. " +
-            "Describe sólo lo visible; no afirmes ver vídeo continuo si sólo recibes una foto. " +
-            "Da respuestas breves, naturales y habladas. " +
-            "Si se piden acciones, comprueba que estén disponibles antes de prometerlas. " +
-            "PREGUNTA: " + question
+        return sendToAgent(question, jpeg)
+    }
+
+    private fun sendToAgent(question: String, jpeg: ByteArray?): Boolean {
+        if (!connected) {
+            error("OpenClaw no está conectado en Termux.")
+            return false
+        }
+        if (busy) {
+            status("OpenClaw sigue respondiendo a la pregunta anterior.")
+            return false
+        }
+        val visual = jpeg != null
+        val instruction = if (visual) {
+            "Responde en español, breve y naturalmente, para escuchar por unas Ray-Ban Meta. " +
+                "Se adjunta UNA fotografía real reciente de las gafas. Describe solo lo visible. " +
+                "No inventes detalles ni asegures ver vídeo continuo. Pregunta: " + question
+        } else {
+            "Responde en español de forma breve y natural para oírlo mediante unas Ray-Ban Meta. " +
+                "No se ha adjuntado ninguna imagen; no afirmes ver los alrededores. " +
+                "Petición: " + question
+        }
         val payload = JSONObject()
             .put("sessionKey", session)
             .put("message", instruction)
             .put("deliver", false)
             .put("idempotencyKey", UUID.randomUUID().toString())
-            .put("attachments", JSONArray().put(JSONObject()
-                .put("type", "image")
-                .put("mimeType", "image/jpeg")
+        if (jpeg != null) {
+            payload.put("attachments", JSONArray().put(JSONObject()
+                .put("type", "image").put("mimeType", "image/jpeg")
                 .put("content", Base64.encodeToString(jpeg, Base64.NO_WRAP))))
+        }
         val id = UUID.randomUUID().toString()
         responseId = id
         busy = true
+        lastReply = ""
         val ok = socket?.send(JSONObject()
-            .put("type", "req")
-            .put("id", id)
-            .put("method", "chat.send")
+            .put("type", "req").put("id", id).put("method", "chat.send")
             .put("params", payload).toString()) ?: false
         if (!ok) {
             busy = false
-            error("No se pudo enviar la fotografía de las Ray-Ban a OpenClaw.")
-        } else status("Imagen REAL enviada. Esperando a Muse…")
+            error("No se pudo enviar la pregunta a OpenClaw.")
+        } else {
+            status(if (visual) "Imagen real enviada a OpenClaw. Esperando respuesta…"
+                   else "Pregunta de VOZ enviada a OpenClaw, sin fotografía. Esperando respuesta…")
+        }
         return ok
     }
 
