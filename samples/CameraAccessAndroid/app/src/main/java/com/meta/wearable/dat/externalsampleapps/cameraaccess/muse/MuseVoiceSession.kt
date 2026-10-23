@@ -12,6 +12,7 @@ import com.meta.wearable.dat.core.session.DeviceSession
 import com.meta.wearable.dat.speech.Speech
 import com.meta.wearable.dat.speech.addSpeech
 import com.meta.wearable.dat.speech.removeSpeech
+import com.meta.wearable.dat.speech.types.SpeechState
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +37,10 @@ class MuseVoiceSession(
     private var speechOwner: DeviceSession? = null
     private var attachingSpeech = false
     private var transcriptJob: Job? = null
+    private var speechStateJob: Job? = null
+    private var speechErrorJob: Job? = null
+    private var speechLocaleJob: Job? = null
+    private var recognitionLocale = "sin confirmar"
     private var gateway: MuseGateway? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -89,25 +94,73 @@ class MuseVoiceSession(
                 onSuccess = { instance ->
                     speech = instance
                     speechOwner = deviceSession
+                    // Report real partial/final results BEFORE wake-word filtering.
+                    // Until now the UI silently discarded every phrase that did not begin with Muse.
                     transcriptJob = scope.launch {
                         instance.transcriptions.collect { transcript ->
-                            if (transcript != null && transcript.isFinal && 
-                                transcript.text.isNotBlank() && running && !speaking) {
-                                val words = transcript.text.trim()
-                                val spoken = words.lowercase(Locale.forLanguageTag("es-ES"))
-                                // Explicit wake word: no unwanted photo uploads or API usage.
-                                if (spoken.startsWith("muse") || spoken.contains("oye muse") ||
-                                    spoken.contains("hola muse")) {
-                                    onHeard(words)
-                                    sendQuestion(words)
-                                }
+                            if (transcript == null || !running || speaking) return@collect
+                            val words = transcript.text.trim()
+                            if (words.isBlank()) return@collect
+                            if (!transcript.isFinal) {
+                                onStatus("Reconociendo desde las Ray-Ban: " + words.take(95))
+                                return@collect
+                            }
+                            onHeard(words)
+                            val spoken = words.lowercase(Locale.forLanguageTag("es-ES"))
+                            // Keep wake-word protection: don't silently upload private images.
+                            if (spoken.startsWith("muse") || spoken.contains("oye muse") ||
+                                spoken.contains("hola muse")) {
+                                onStatus("Reconocido: " + words.take(90) + ". Consultando…")
+                                sendQuestion(words)
+                            } else {
+                                onStatus("Oí en las gafas: " + words.take(95) +
+                                    ". Para preguntar, comienza diciendo Muse.")
                             }
                         }
                     }
-                    instance.start().onFailure { error, _ ->
-                        onStatus("Micrófono Ray-Ban Meta: " + error.description)
+                    speechStateJob = scope.launch {
+                        var started = false
+                        instance.state.collect { state ->
+                            if (!running) return@collect
+                            when (state) {
+                                SpeechState.STARTED -> {
+                                    started = true
+                                    onStatus("Escuchando realmente desde las Ray-Ban (" +
+                                        recognitionLocale + "). Di: Muse, qué ves.")
+                                }
+                                SpeechState.STOPPED -> {
+                                    if (started && !speaking) onStatus(
+                                        "El reconocimiento Ray-Ban se detuvo. Apaga y enciende AI.")
+                                }
+                                else -> Unit
+                            }
+                        }
                     }
-                    onStatus("Micrófono Ray-Ban preparado. Di 'Muse' y tu pregunta. OpenClaw debe tener el modelo Muse configurado.")
+                    speechErrorJob = scope.launch {
+                        instance.errors.collect { error ->
+                            if (error != null && running) {
+                                onStatus("Error de reconocimiento Meta: " + error.description)
+                            }
+                        }
+                    }
+                    speechLocaleJob = scope.launch {
+                        instance.locale.collect { locale ->
+                            recognitionLocale = locale.toString()
+                            if (running && instance.state.value == SpeechState.STARTED) {
+                                onStatus("Escuchando Ray-Ban. Idioma de Meta: " +
+                                    recognitionLocale + ". Di: Muse, qué ves.")
+                            }
+                        }
+                    }
+                    onStatus("Iniciando reconocimiento de voz REAL en las Ray-Ban…")
+                    instance.start()
+                        .onSuccess {
+                            // Success only means the start was accepted. Confirm LISTENING via state.
+                            onStatus("Inicio aceptado por Meta; comprobando si escucha…")
+                        }
+                        .onFailure { error, _ ->
+                            onStatus("La voz Ray-Ban NO arrancó: " + error.description)
+                        }
                 },
                 onFailure = { error, _ ->
                     onStatus("No se ha podido iniciar la voz de las Ray-Ban: " + error.description)
@@ -212,7 +265,14 @@ class MuseVoiceSession(
         running = false
         speaking = false
         transcriptJob?.cancel()
+        speechStateJob?.cancel()
+        speechErrorJob?.cancel()
+        speechLocaleJob?.cancel()
         transcriptJob = null
+        speechStateJob = null
+        speechErrorJob = null
+        speechLocaleJob = null
+        recognitionLocale = "sin confirmar"
         try { speech?.stop() } catch (_: Exception) {}
         try { speechOwner?.removeSpeech() } catch (error: Exception) {
             android.util.Log.w("MuseVoiceSession", "Failed to release Meta speech capability", error)
