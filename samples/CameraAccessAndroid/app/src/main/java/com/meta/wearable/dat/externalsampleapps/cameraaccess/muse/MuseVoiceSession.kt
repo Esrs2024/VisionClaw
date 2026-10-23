@@ -11,6 +11,7 @@ import android.speech.tts.UtteranceProgressListener
 import com.meta.wearable.dat.core.session.DeviceSession
 import com.meta.wearable.dat.speech.Speech
 import com.meta.wearable.dat.speech.addSpeech
+import com.meta.wearable.dat.speech.removeSpeech
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +33,8 @@ class MuseVoiceSession(
 ) {
     private var running = false
     private var speech: Speech? = null
+    private var speechOwner: DeviceSession? = null
+    private var attachingSpeech = false
     private var transcriptJob: Job? = null
     private var gateway: MuseGateway? = null
     private var tts: TextToSpeech? = null
@@ -79,11 +82,13 @@ class MuseVoiceSession(
     }
 
     private fun attachMetaSpeech(deviceSession: DeviceSession) {
-        if (!running || speech != null) return
+        if (!running || speech != null || attachingSpeech) return
+        attachingSpeech = true
         try {
             deviceSession.addSpeech().fold(
                 onSuccess = { instance ->
                     speech = instance
+                    speechOwner = deviceSession
                     transcriptJob = scope.launch {
                         instance.transcriptions.collect { transcript ->
                             if (transcript != null && transcript.isFinal && 
@@ -110,6 +115,8 @@ class MuseVoiceSession(
             )
         } catch (error: Exception) {
             onStatus("Error de voz Meta: " + (error.message ?: "sin detalles"))
+        } finally {
+            attachingSpeech = false
         }
     }
 
@@ -199,12 +206,20 @@ class MuseVoiceSession(
     }
 
     fun stop() {
+        // Stopping recognition is NOT the same as removing the SDK capability.
+        // Leaving Speech attached causes addSpeech() on the next AI toggle to fail
+        // with "A capability of this type is already active on the session".
         running = false
         speaking = false
         transcriptJob?.cancel()
         transcriptJob = null
         try { speech?.stop() } catch (_: Exception) {}
+        try { speechOwner?.removeSpeech() } catch (error: Exception) {
+            android.util.Log.w("MuseVoiceSession", "Failed to release Meta speech capability", error)
+        }
         speech = null
+        speechOwner = null
+        attachingSpeech = false
         gateway?.close()
         gateway = null
         tts?.stop()
