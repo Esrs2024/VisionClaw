@@ -89,7 +89,7 @@ jobs:
           "$TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee apk-signature.txt
           grep -Fq '567c39b4c6ea3e52a0d642f8fe9a3b082d3952306df364fc26a2d9624e55f76e' apk-signature.txt
           "$TOOLS/aapt" dump badging "$APK" > apk-package.txt
-          grep -F "package: name='com.meta.wearable.dat.externalsampleapps.cameraaccess' versionCode='6'" apk-package.txt
+          grep -F "package: name='com.meta.wearable.dat.externalsampleapps.cameraaccess' versionCode='7'" apk-package.txt
           grep -F "sdkVersion:'31'" apk-package.txt
           grep -F "native-code: 'arm64-v8a'" apk-package.txt
           unzip -t "$APK" > /dev/null
