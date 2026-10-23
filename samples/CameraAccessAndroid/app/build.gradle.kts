@@ -22,8 +22,8 @@ android {
     applicationId = "com.meta.wearable.dat.externalsampleapps.cameraaccess"
     minSdk = 31
     targetSdk = 34
-    versionCode = 5
-    versionName = "1.4-muse-real-glasses"
+    versionCode = 6
+    versionName = "1.5-muse-voice-diagnostic"
     ndk { abiFilters += listOf("arm64-v8a") }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
