@@ -44,6 +44,14 @@ class OpenClawBridge {
     private var sessionKey: String = "agent:main:glass"
     private val conversationHistory = mutableListOf<JSONObject>()
 
+    /**
+     * A GET on the POST-only /v1/chat/completions endpoint returns 405 even when
+     * the token is invalid. Never treat arbitrary 4xx responses as "Connected".
+     *
+     * /v1/models checks authenticated access without invoking a model. A
+     * deliberately invalid chat request then checks that chat completions are
+     * enabled, without executing an agent or consuming model tokens.
+     */
     suspend fun checkConnection() = withContext(Dispatchers.IO) {
         if (!GeminiConfig.isOpenClawConfigured) {
             _connectionState.value = OpenClawConnectionState.NotConfigured
@@ -51,28 +59,90 @@ class OpenClawBridge {
         }
         _connectionState.value = OpenClawConnectionState.Checking
 
-        val url = "${GeminiConfig.openClawHost}:${GeminiConfig.openClawPort}/v1/chat/completions"
+        val baseUrl = "${GeminiConfig.openClawHost}:${GeminiConfig.openClawPort}"
+        val token = GeminiConfig.openClawGatewayToken
+
         try {
-            val request = Request.Builder()
-                .url(url)
+            val modelsRequest = Request.Builder()
+                .url("$baseUrl/v1/models")
                 .get()
-                .addHeader("Authorization", "Bearer ${GeminiConfig.openClawGatewayToken}")
-                .addHeader("x-openclaw-message-channel", "glass")
+                .header("Authorization", "Bearer $token")
                 .build()
 
-            val response = pingClient.newCall(request).execute()
-            val code = response.code
-            response.close()
+            val modelsReady = pingClient.newCall(modelsRequest).execute().use { response ->
+                when (response.code) {
+                    200 -> {
+                        val body = response.body?.string().orEmpty()
+                        val valid = runCatching {
+                            JSONObject(body).optJSONArray("data") != null
+                        }.getOrDefault(false)
+                        if (!valid) {
+                            _connectionState.value = OpenClawConnectionState.Unreachable(
+                                "El Gateway no devolvió una lista de agentes válida."
+                            )
+                        }
+                        valid
+                    }
+                    401 -> {
+                        _connectionState.value = OpenClawConnectionState.Unreachable(
+                            "Gateway Token no válido. Comprueba la clave de OpenClaw en Termux."
+                        )
+                        false
+                    }
+                    403 -> {
+                        _connectionState.value = OpenClawConnectionState.Unreachable(
+                            "El Gateway rechazó los permisos del token."
+                        )
+                        false
+                    }
+                    404, 405 -> {
+                        _connectionState.value = OpenClawConnectionState.Unreachable(
+                            "La API HTTP de OpenClaw no está disponible. Revisa gateway.http.endpoints.chatCompletions.enabled."
+                        )
+                        false
+                    }
+                    else -> {
+                        _connectionState.value = OpenClawConnectionState.Unreachable(
+                            "OpenClaw respondió HTTP ${response.code} al verificar el acceso."
+                        )
+                        false
+                    }
+                }
+            }
+            if (!modelsReady) return@withContext
 
-            if (code in 200..499) {
-                _connectionState.value = OpenClawConnectionState.Connected
-                Log.d(TAG, "Gateway reachable (HTTP $code)")
-            } else {
-                _connectionState.value = OpenClawConnectionState.Unreachable("Unexpected response")
+            // Invalid by design: no valid messages are provided, so this must
+            // fail at validation before any agent request is launched.
+            val probeRequest = Request.Builder()
+                .url("$baseUrl/v1/chat/completions")
+                .post("""{"messages":"visionclaw-endpoint-probe-not-an-array"}"""
+                    .toRequestBody("application/json".toMediaType()))
+                .header("Authorization", "Bearer $token")
+                .build()
+
+            pingClient.newCall(probeRequest).execute().use { response ->
+                _connectionState.value = when (response.code) {
+                    400, 422 -> OpenClawConnectionState.Connected
+                    401 -> OpenClawConnectionState.Unreachable(
+                        "OpenClaw rechazó el Gateway Token."
+                    )
+                    403 -> OpenClawConnectionState.Unreachable(
+                        "No hay permisos para ejecutar el agente de OpenClaw."
+                    )
+                    404, 405 -> OpenClawConnectionState.Unreachable(
+                        "La API de Chat Completions está desactivada. Habilita gateway.http.endpoints.chatCompletions.enabled."
+                    )
+                    else -> OpenClawConnectionState.Unreachable(
+                        "La API de Chat Completions no se pudo verificar (HTTP ${response.code})."
+                    )
+                }
+                Log.d(TAG, "OpenClaw chat endpoint probe HTTP ${response.code}")
             }
         } catch (e: Exception) {
-            _connectionState.value = OpenClawConnectionState.Unreachable(e.message ?: "Unknown error")
-            Log.d(TAG, "Gateway unreachable: ${e.message}")
+            _connectionState.value = OpenClawConnectionState.Unreachable(
+                "No se pudo conectar con OpenClaw: ${e.message ?: "error de red"}"
+            )
+            Log.d(TAG, "OpenClaw connectivity check failed: ${e.javaClass.simpleName}")
         }
     }
 
