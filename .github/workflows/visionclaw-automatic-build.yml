@@ -1,0 +1,39 @@
+name: VisionClaw - comprobar y lanzar compilacion de gemini-direct
+
+on:
+  schedule:
+    # GitHub schedules run on the default branch; check every three hours.
+    - cron: "47 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: visionclaw-gemini-direct-scheduled-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch-if-new-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verificar si falta compilar el ultimo commit de gemini-direct
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="$(gh api "repos/${GH_REPO}/git/ref/heads/gemini-direct" --jq '.object.sha')"
+          echo "Ultimo commit de gemini-direct: ${SHA}"
+          RUNS="$(gh api "repos/${GH_REPO}/actions/workflows/android-apk.yml/runs?branch=gemini-direct&per_page=100")"
+          SEEN="$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | length' <<< "$RUNS")"
+          if [ "$SEEN" -gt 0 ]; then
+            echo "Ya existe una ejecucion del workflow de Android para este commit. No se generan ejecuciones duplicadas."
+            exit 0
+          fi
+          echo "No hay ejecucion de Android para este commit. Lanzando workflow_dispatch..."
+          gh api -X POST "repos/${GH_REPO}/actions/workflows/android-apk.yml/dispatches" -f ref=gemini-direct
+          echo "GitHub ha aceptado la solicitud de compilacion."
