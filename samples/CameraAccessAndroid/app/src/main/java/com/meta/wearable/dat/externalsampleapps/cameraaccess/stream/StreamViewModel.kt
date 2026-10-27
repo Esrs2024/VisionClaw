@@ -31,7 +31,7 @@ import com.meta.wearable.dat.camera.addCamera
 import com.meta.wearable.dat.core.session.DeviceSession
 import com.meta.wearable.dat.core.session.DeviceSessionState
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CancellationException
 import com.meta.wearable.dat.camera.types.PhotoData
 import com.meta.wearable.dat.camera.types.StreamConfiguration
@@ -149,8 +149,18 @@ class StreamViewModel(
           }
         }
         created.start()
-        val state = withTimeout(20000) {
+        // withTimeout throws TimeoutCancellationException (a CancellationException).
+        // Handle timeout explicitly so the created device session is always released.
+        val state = withTimeoutOrNull(20_000L) {
           created.state.first { it == DeviceSessionState.STARTED || it == DeviceSessionState.STOPPED }
+        }
+        if (state == null) {
+          wearablesViewModel.setRecentError(
+              "Las gafas no iniciaron la sesión en 20 segundos. Sesión cerrada; comprueba Meta AI y vuelve a intentarlo."
+          )
+          stopStream()
+          wearablesViewModel.navigateToDeviceSelection()
+          return@launch
         }
         check(state == DeviceSessionState.STARTED) { "Las gafas cerraron la sesión antes de iniciarla." }
         val addedCamera = created.addCamera(
@@ -163,7 +173,19 @@ class StreamViewModel(
         streamSession = active
         StreamingService.start(getApplication())
         videoJob = viewModelScope.launch {
-          active.videoStream.collect { frame -> handleVideoFrame(frame) }
+          try {
+            active.videoStream.collect { frame -> handleVideoFrame(frame) }
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Exception) {
+            // Never leave a frozen last frame on screen while claiming STREAMING.
+            Log.e(TAG, "Failed to process a real Ray-Ban video frame", e)
+            wearablesViewModel.setRecentError(
+                "El vídeo real de las gafas se interrumpió: ${e.message ?: "no se pudo convertir el fotograma"}. Vuelve a conectar."
+            )
+            stopStream()
+            wearablesViewModel.navigateToDeviceSelection()
+          }
         }
         streamErrors = viewModelScope.launch {
           active.errorStream.collect { error ->
@@ -266,17 +288,33 @@ class StreamViewModel(
       _uiState.update { it.copy(isCapturing = true) }
 
       viewModelScope.launch {
-        streamSession
-            ?.capturePhoto()
-            ?.onSuccess { photoData ->
-              Log.d(TAG, "Photo capture successful")
-              handlePhotoData(photoData)
-              _uiState.update { it.copy(isCapturing = false) }
-            }
-            ?.onFailure {
-              Log.e(TAG, "Photo capture failed")
-              _uiState.update { it.copy(isCapturing = false) }
-            }
+        try {
+          val currentStream = streamSession
+          if (currentStream == null) {
+            wearablesViewModel.setRecentError("No hay cámara Ray-Ban activa para hacer la fotografía.")
+          } else {
+            currentStream.capturePhoto()
+                .onSuccess { photoData ->
+                  Log.d(TAG, "Photo capture received")
+                  handlePhotoData(photoData)
+                }
+                .onFailure { error, _ ->
+                  Log.e(TAG, "Photo capture failed: ${error.description}")
+                  wearablesViewModel.setRecentError(
+                      "No se pudo hacer la foto con las gafas: ${error.description}"
+                  )
+                }
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          Log.e(TAG, "Failed to decode captured Ray-Ban photo", e)
+          wearablesViewModel.setRecentError(
+              "La foto de las gafas no se pudo procesar. Inténtalo de nuevo."
+          )
+        } finally {
+          _uiState.update { it.copy(isCapturing = false) }
+        }
       }
     } else {
       Log.w(
@@ -321,30 +359,38 @@ class StreamViewModel(
 
   private fun handleVideoFrame(videoFrame: VideoFrame) {
     if (videoFrame.isCompressed) {
-      wearablesViewModel.setRecentError("La cámara devolvió vídeo comprimido cuando se solicitó vídeo sin comprimir.")
-      return
+      throw IllegalStateException(
+          "La cámara envió vídeo comprimido, aunque se solicitó vídeo sin comprimir."
+      )
     }
-    // VideoFrame contains raw I420 video data in a ByteBuffer
-    val buffer = videoFrame.buffer
-    val dataSize = buffer.remaining()
-    val byteArray = ByteArray(dataSize)
-
-    // Save current position
-    val originalPosition = buffer.position()
-    buffer.get(byteArray)
-    // Restore position
-    buffer.position(originalPosition)
+    // The conversion below needs tightly packed, even-dimension I420.
+    // Validate size before copying to avoid silently cancelling the collector.
+    val width = videoFrame.width
+    val height = videoFrame.height
+    require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0) {
+      "Dimensiones I420 no válidas: ${width}x${height}"
+    }
+    val expectedBytes = width.toLong() * height.toLong() * 3 / 2
+    require(expectedBytes <= Int.MAX_VALUE && videoFrame.buffer.remaining() >= expectedBytes) {
+      "Fotograma I420 incompleto (${videoFrame.buffer.remaining()} bytes, esperados $expectedBytes)"
+    }
+    val byteArray = ByteArray(expectedBytes.toInt())
+    videoFrame.buffer.duplicate().get(byteArray)
 
     // Convert I420 to NV21 format which is supported by Android's YuvImage
     val nv21 = convertI420toNV21(byteArray, videoFrame.width, videoFrame.height)
     val image = YuvImage(nv21, ImageFormat.NV21, videoFrame.width, videoFrame.height, null)
     val out =
         ByteArrayOutputStream().use { stream ->
-          image.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 50, stream)
+          check(image.compressToJpeg(Rect(0, 0, videoFrame.width, videoFrame.height), 50, stream)) {
+            "Falló la conversión de imagen Ray-Ban a JPEG"
+          }
           stream.toByteArray()
         }
 
     val bitmap = BitmapFactory.decodeByteArray(out, 0, out.size)
+        ?: throw IllegalStateException("No se pudo decodificar el fotograma de las Ray-Ban")
+    // Mark a frame fresh only when its bitmap was decoded successfully.
     lastRealGlassesFrameAt = SystemClock.elapsedRealtime()
     _uiState.update { it.copy(videoFrame = bitmap) }
 
@@ -374,8 +420,9 @@ class StreamViewModel(
         when (photo) {
           is PhotoData.Bitmap -> photo.bitmap
           is PhotoData.HEIC -> {
-            val byteArray = ByteArray(photo.data.remaining())
-            photo.data.get(byteArray)
+            val data = photo.data.duplicate()
+            val byteArray = ByteArray(data.remaining())
+            data.get(byteArray)
 
             // Extract EXIF transformation matrix and apply to bitmap
             val exifInfo = getExifInfo(byteArray)
@@ -383,12 +430,18 @@ class StreamViewModel(
             decodeHeic(byteArray, transform)
           }
         }
+    if (capturedPhoto == null) {
+      wearablesViewModel.setRecentError(
+          "La cámara envió una foto que Android no pudo abrir. Inténtalo de nuevo."
+      )
+      return
+    }
     _uiState.update { it.copy(capturedPhoto = capturedPhoto, isShareDialogVisible = true) }
   }
 
   // HEIC Decoding with EXIF transformation
-  private fun decodeHeic(heicBytes: ByteArray, transform: Matrix): Bitmap {
-    val bitmap = BitmapFactory.decodeByteArray(heicBytes, 0, heicBytes.size)
+  private fun decodeHeic(heicBytes: ByteArray, transform: Matrix): Bitmap? {
+    val bitmap = BitmapFactory.decodeByteArray(heicBytes, 0, heicBytes.size) ?: return null
     return applyTransform(bitmap, transform)
   }
 
